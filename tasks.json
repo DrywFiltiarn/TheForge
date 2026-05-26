@@ -1,0 +1,762 @@
+[
+  {
+    "id": "P1-A1",
+    "description": "Repository scaffold + CI workflow",
+    "prereqs": [],
+    "repos": [
+      "root"
+    ],
+    "phase": "1",
+    "context": "Create SindriStudio root repo structure: .gitmodules (backend=AnvilML, frontend=BloomeryUI submodules), .gitignore, README.md, models/ subdirs (clip/diffusion/vae/lora/controlnet/unet/upscale) each with .gitkeep, artifacts/.gitkeep, .cline/state/CURRENT_TASK.md initialized to P1-A2, .github/workflows/ci.yml skeleton."
+  },
+  {
+    "id": "P1-A2",
+    "description": "Cargo workspace + crate skeletons",
+    "prereqs": [
+      "P1-A1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Create AnvilML repo: workspace Cargo.toml with all 8 crates (anvilml-core, anvilml-hardware, anvilml-registry, anvilml-ipc, anvilml-worker, anvilml-scheduler, anvilml-server, anvilml-openapi) plus launcher binary. Each crate has a compiling lib.rs/main.rs stub with one trivial test. cargo build --workspace and cargo test --workspace must exit 0."
+  },
+  {
+    "id": "P1-A3",
+    "description": "anvilml-core: config types",
+    "prereqs": [
+      "P1-A2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement ServerConfig, RocmConfig, ModelDirConfig, ModelKind, HardwareOverrideConfig in anvilml-core/src/config.rs and error.rs. Config loads from anvilml.toml via the config crate with ANVILML_* env var overrides. See ENVIRONMENT.md for exact field names and defaults. cargo test -p anvilml-core exits 0 with >=4 tests."
+  },
+  {
+    "id": "P1-A4",
+    "description": "anvilml-core: job + model + hardware types",
+    "prereqs": [
+      "P1-A3"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement all domain types in anvilml-core/src/types/: job.rs (Job, JobStatus, JobSettings, SubmitJobRequest, SubmitJobResponse), model.rs (ModelMeta, ArtifactMeta, DType), hardware.rs (GpuDevice, DeviceType, HardwareInfo, HostInfo, InferenceCaps), worker.rs (WorkerInfo, WorkerStatus), events.rs (WsEvent). All shapes must match API_CONTRACT.md exactly. All derive ToSchema. cargo test -p anvilml-core exits 0 with >=8 tests."
+  },
+  {
+    "id": "P1-A5",
+    "description": "anvilml-ipc: message types + framing",
+    "prereqs": [
+      "P1-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement WorkerMessage enum (Rust->Python) and WorkerEvent enum (Python->Rust) in anvilml-ipc/src/messages.rs. Implement 4-byte big-endian length prefix + msgpack framing in framing.rs. ALL variants must exactly match IPC_PROTOCOL.md. cargo test -p anvilml-ipc exits 0 with >=5 round-trip tests including message size limit enforcement."
+  },
+  {
+    "id": "P1-A6",
+    "description": "anvilml-hardware: detector trait + CPU impl",
+    "prereqs": [
+      "P1-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Define DeviceDetector trait and CpuDetector (always succeeds, uses sysinfo for RAM). Implement pub async fn detect_all_devices(config) -> Result<HardwareInfo>. cargo test -p anvilml-hardware exits 0 with >=4 tests."
+  },
+  {
+    "id": "P1-A7",
+    "description": "anvilml-hardware: ROCm detection",
+    "prereqs": [
+      "P1-A6"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement RocmDetector in rocm.rs: rocm-smi JSON parsing, gfx arch via rocminfo, version detection, ReBAR via lspci. Graceful degradation when tools absent (Ok(vec![])). All tests use fixture strings \u2014 no real ROCm needed. cargo test -p anvilml-hardware exits 0."
+  },
+  {
+    "id": "P1-A8",
+    "description": "anvilml-hardware: CUDA + IPEX detection",
+    "prereqs": [
+      "P1-A6"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement CudaDetector (nvidia-smi JSON) and IpexDetector (xpu-smi / intel-smi). Same graceful degradation pattern as ROCm. Fixture-based tests. cargo test -p anvilml-hardware exits 0."
+  },
+  {
+    "id": "P1-A9",
+    "description": "anvilml-hardware: mock implementation",
+    "prereqs": [
+      "P1-A6"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement MockHardwareDetector behind the mock-hardware feature flag. Reads ANVILML_MOCK_DEVICE_TYPE, ANVILML_MOCK_VRAM_MIB, ANVILML_MOCK_GFX_ARCH env vars. Used by all CI tests. cargo test -p anvilml-hardware --features mock-hardware exits 0."
+  },
+  {
+    "id": "P1-B1",
+    "description": "anvilml-registry: model scanner",
+    "prereqs": [
+      "P1-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement scanner.rs: walk dirs recursively, find .safetensors/.gguf/.pt/.bin, generate ModelMeta (id=sha256 prefix of path, dtype_hint from filename, vram estimate). No DB yet. Tests use tempdir with fake files. cargo test -p anvilml-registry exits 0 with >=5 tests."
+  },
+  {
+    "id": "P1-B2",
+    "description": "anvilml-registry: SQLite persistence",
+    "prereqs": [
+      "P1-B1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement ModelRegistry backed by SQLite (sqlx). Methods: new(pool), scan_and_persist(dirs), list(filter), get(id), count(), estimate_vram_mib(path, dtype). Migration in migrations/001_models.sql. Tests use sqlite::memory:. cargo test -p anvilml-registry exits 0 with >=5 tests."
+  },
+  {
+    "id": "P1-C1",
+    "description": "Python worker: ipc.py framing",
+    "prereqs": [
+      "P1-A5"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement backend/worker/ipc.py with read_message() and write_event() matching IPC_PROTOCOL.md exactly (4-byte big-endian prefix + msgpack). Create tests/conftest.py and tests/test_ipc.py. ANVILML_WORKER_MOCK=1 pytest exits 0 with >=5 tests."
+  },
+  {
+    "id": "P1-C2",
+    "description": "Python worker: worker_main.py startup + Ready",
+    "prereqs": [
+      "P1-C1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement worker_main.py: parse --worker-id and --device-index args, mock mode (ANVILML_WORKER_MOCK=1 skips torch), real mode (set OMP/MKL env vars BEFORE import torch), send Ready event. Tests in test_worker_startup.py all use mock mode. ANVILML_WORKER_MOCK=1 pytest exits 0."
+  },
+  {
+    "id": "P1-C3",
+    "description": "Python worker: Ping/Pong + MemoryReport + Shutdown",
+    "prereqs": [
+      "P1-C2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Add IPC message handlers: Ping->Pong (same seq), Shutdown->Dying then exit 0, MemoryReport background thread every 10s. Tests in test_worker_messages.py. ANVILML_WORKER_MOCK=1 pytest exits 0."
+  },
+  {
+    "id": "P1-D1",
+    "description": "anvilml-worker: WorkerPool + spawn",
+    "prereqs": [
+      "P1-A9",
+      "P1-C2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement WorkerPool (pool.rs) and ManagedWorker (managed.rs). WorkerPool spawns Python worker processes with correct args, tracks per-worker state (Initializing->Idle after Ready event), provides acquire_idle/set_busy/set_idle. Tests spawn real Python with ANVILML_WORKER_MOCK=1. cargo test -p anvilml-worker --features mock-hardware exits 0."
+  },
+  {
+    "id": "P1-D2",
+    "description": "anvilml-worker: IPC bridge (stdin writer + stdout reader)",
+    "prereqs": [
+      "P1-D1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement ipc_bridge.rs: async stdin writer task (WorkerMessage via mpsc -> framed bytes) and stdout reader task (framed bytes -> WorkerEvent broadcast). On pipe close: mark worker Dead, schedule respawn after 2s. Tests: Ping->Pong round-trip with mock Python worker. cargo test -p anvilml-worker --features mock-hardware exits 0."
+  },
+  {
+    "id": "P1-D3",
+    "description": "anvilml-worker: ROCm/CUDA/IPEX env injection",
+    "prereqs": [
+      "P1-D1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement env.rs: build_worker_env(device, config) -> HashMap<String,String>. Inject exact env vars per device type from ENVIRONMENT.md (HIP_VISIBLE_DEVICES, ROCBLAS_USE_HIPBLASLT, etc. for ROCm; CUDA_VISIBLE_DEVICES for CUDA). Platform-aware (Windows vs Linux paths). cargo test -p anvilml-worker --features mock-hardware exits 0 with >=5 tests."
+  },
+  {
+    "id": "P1-E1",
+    "description": "anvilml-scheduler: JobQueue + VramLedger",
+    "prereqs": [
+      "P1-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement queue.rs (JobQueue: push/pop_front/cancel/get/list/len) and ledger.rs (VramLedger: per-device VRAM budget tracking, would_fit, mark_loaded, mark_evicted). Pure logic, no async/IO. cargo test -p anvilml-scheduler exits 0 with >=8 tests."
+  },
+  {
+    "id": "P1-E2",
+    "description": "anvilml-scheduler: JobScheduler dispatch loop",
+    "prereqs": [
+      "P1-E1",
+      "P1-D2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement JobScheduler (scheduler.rs) and dag.rs (topological sort + cycle detection). JobScheduler: submit/cancel/get_job/list_jobs, start_dispatch_loop (assigns queued jobs to idle workers), subscribe_status broadcast. cargo test -p anvilml-scheduler --features mock-hardware exits 0 with >=6 tests."
+  },
+  {
+    "id": "P1-F1",
+    "description": "anvilml-server: AppState + router skeleton",
+    "prereqs": [
+      "P1-E2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement AppState (Arc-wrapped: config, scheduler, workers, registry, hardware, db, broadcaster), axum router with middleware (CORS, compression, tracing, request-id), all route handlers as 501 stubs. Server starts and responds. cargo test -p anvilml-server --features mock-hardware exits 0."
+  },
+  {
+    "id": "P1-F2",
+    "description": "anvilml-server: GET /health + GET /v1/system",
+    "prereqs": [
+      "P1-F1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement handlers/health.rs (GET /health) and handlers/system.rs (GET /v1/system). Shapes must exactly match API_CONTRACT.md. Integration tests in backend/tests/api_health.rs and api_system.rs. cargo test --features mock-hardware exits 0 with >=6 tests."
+  },
+  {
+    "id": "P1-F3",
+    "description": "anvilml-server: jobs CRUD endpoints",
+    "prereqs": [
+      "P1-F1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement handlers/jobs.rs: POST /v1/jobs (202), GET /v1/jobs, GET /v1/jobs/:id, DELETE /v1/jobs/:id. Shapes exactly match API_CONTRACT.md. Integration tests in backend/tests/api_jobs.rs. cargo test --features mock-hardware exits 0 with >=7 tests."
+  },
+  {
+    "id": "P1-F4",
+    "description": "anvilml-server: models + workers endpoints",
+    "prereqs": [
+      "P1-F1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement handlers/models.rs (GET /v1/models, GET /v1/models/:id) and handlers/workers.rs (GET /v1/workers). Shapes match API_CONTRACT.md. cargo test --features mock-hardware exits 0 with >=4 tests."
+  },
+  {
+    "id": "P1-F5",
+    "description": "anvilml-server: WebSocket /v1/events",
+    "prereqs": [
+      "P1-F1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement ws/broadcaster.rs (EventBroadcaster wrapping broadcast::Sender<WsEvent>) and handlers/events.rs (WS upgrade, subscribe on connect, JSON text frames, ping/pong keepalive 30s, clean disconnect). Tests with tokio_tungstenite. cargo test --features mock-hardware exits 0 with >=4 tests."
+  },
+  {
+    "id": "P1-F6",
+    "description": "anvilml-server: system.stats broadcast tick",
+    "prereqs": [
+      "P1-F5"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Add background task in lib.rs: send system.stats WsEvent every 5 seconds. Event shape matches API_CONTRACT.md. Tests: system.stats received within 6s of server start, correct fields. cargo test --features mock-hardware exits 0."
+  },
+  {
+    "id": "P1-G1",
+    "description": "anvilml-openapi: spec generation binary",
+    "prereqs": [
+      "P1-F6"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement anvilml-openapi/src/main.rs: add #[derive(ToSchema)] to all anvilml-core types, add #[utoipa::path] annotations to all handlers, generate openapi.json. cargo run -p anvilml-openapi exits 0 and produces backend/openapi.json. openapi.json committed to repo."
+  },
+  {
+    "id": "P1-H1",
+    "description": "Launcher binary: sindristudio entry point",
+    "prereqs": [
+      "P1-F6"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Implement backend/src/main.rs: parse CLI args (--config, --port, --host, --no-browser), load ServerConfig, init tracing subscriber, call anvilml_server::start(config).await. cargo build --release exits 0. ./target/release/sindristudio --help shows usage."
+  },
+  {
+    "id": "P1-H2",
+    "description": "Launcher: browser open + graceful shutdown",
+    "prereqs": [
+      "P1-H1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "1",
+    "context": "Add browser open via the 'open' crate (after server binds, skipped with --no-browser). Add graceful shutdown: SIGINT/SIGTERM -> workers.shutdown_all() -> wait up to 10s -> exit. cargo build --release exits 0."
+  },
+  {
+    "id": "P1-I1",
+    "description": "BloomeryUI: project scaffold + toolchain",
+    "prereqs": [
+      "P1-A1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Create BloomeryUI repo: Vite+React+TypeScript+Tailwind+Vitest. All directories and stub components from ARCHITECTURE.md frontend section. Design tokens from ARCHITECTURE.md tailwind.config.ts. pnpm install, pnpm build, pnpm test:run, pnpm type-check, pnpm lint all exit 0."
+  },
+  {
+    "id": "P1-I2",
+    "description": "BloomeryUI: API client + generated types",
+    "prereqs": [
+      "P1-G1",
+      "P1-I1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement src/api/client.ts (apiFetch<T> wrapper), src/api/websocket.ts (WebSocketManager), all 5 src/api/endpoints/*.ts files. Run pnpm generate-types from backend/openapi.json to produce src/generated/api-types.ts. pnpm type-check exits 0. pnpm test:run exits 0 with >=4 tests."
+  },
+  {
+    "id": "P1-I3",
+    "description": "BloomeryUI: Zustand stores",
+    "prereqs": [
+      "P1-I2"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement all 5 stores: connection.store.ts, system.store.ts, jobs.store.ts, events.store.ts (ring buffer 200), artifacts.store.ts. pnpm test:run exits 0 with >=12 store tests (>=3 per store)."
+  },
+  {
+    "id": "P1-I4",
+    "description": "BloomeryUI: connection hooks + polling",
+    "prereqs": [
+      "P1-I3"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement useConnection.ts, useSystemStats.ts (polling), useJobEvents.ts (WS). pnpm test:run exits 0."
+  },
+  {
+    "id": "P1-I5",
+    "description": "BloomeryUI: layout components",
+    "prereqs": [
+      "P1-I1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement AppShell, Sidebar, TopBar layout components. Design tokens from ARCHITECTURE.md. pnpm test:run exits 0."
+  },
+  {
+    "id": "P1-I6",
+    "description": "BloomeryUI: SystemStats + WorkerList components",
+    "prereqs": [
+      "P1-I3"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement SystemStats, VramBar (progress bar), WorkerList components. Renders correctly with mock store data. pnpm test:run exits 0 with >=2 tests per component."
+  },
+  {
+    "id": "P1-I7",
+    "description": "BloomeryUI: JobSubmit + JobList components",
+    "prereqs": [
+      "P1-I3"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement ZitJobForm (builds 5-node ZiT graph JSON), JobList, JobDetail, JobProgress. Form validation. pnpm test:run exits 0."
+  },
+  {
+    "id": "P1-I8",
+    "description": "BloomeryUI: ModelList + EventLog components",
+    "prereqs": [
+      "P1-I3"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement ModelList, EventLog, EventEntry components. Empty state + with-data rendering. pnpm test:run exits 0."
+  },
+  {
+    "id": "P1-I9",
+    "description": "BloomeryUI: TestPanel page assembly",
+    "prereqs": [
+      "P1-I5",
+      "P1-I6",
+      "P1-I7",
+      "P1-I8"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "1",
+    "context": "Implement TestPanel page assembling all sections. All component groups visible. No console errors. pnpm build exits 0. pnpm test:run exits 0."
+  },
+  {
+    "id": "P1-J1",
+    "description": "GitHub Actions CI workflow",
+    "prereqs": [
+      "P1-G1",
+      "P1-I9"
+    ],
+    "repos": [
+      "root"
+    ],
+    "phase": "1",
+    "context": "Implement .github/workflows/ci.yml with 3 jobs per TESTING_STRATEGY.md: backend (cargo fmt --check, cargo clippy --features mock-hardware, cargo test --features mock-hardware, cargo run -p anvilml-openapi), frontend (pnpm install --frozen-lockfile, pnpm type-check, pnpm lint, pnpm test:run, pnpm build), python-worker (ANVILML_WORKER_MOCK=1 python -m pytest). All must pass."
+  },
+  {
+    "id": "P1-J2",
+    "description": "Integration smoke test",
+    "prereqs": [
+      "P1-H2",
+      "P1-I9"
+    ],
+    "repos": [
+      "anvilml",
+      "bloomeryui",
+      "root"
+    ],
+    "phase": "1",
+    "context": "Manual end-to-end smoke test. cargo build --release, start sindristudio, verify browser opens, BloomeryUI shows connected, SystemStats shows real hardware, WorkerList shows idle worker, submit empty workflow job, verify job appears in queue, system.stats events arrive every 5s, Ctrl+C graceful shutdown. Document all 10 steps in the P1-J2 report."
+  },
+  {
+    "id": "P2-A1",
+    "description": "Python worker: thread config + torch setup",
+    "prereqs": [
+      "P1-J2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement correct threading config in worker_main.py: set OMP/MKL/OPENBLAS/VECLIB env vars BEFORE import torch. Read thread counts from ANVILML_NUM_THREADS (default 14) and ANVILML_NUM_INTEROP_THREADS (default 4). Set torch.backends.cuda.matmul.allow_tf32=False and cudnn.allow_tf32=False. pytest exits 0."
+  },
+  {
+    "id": "P2-A2",
+    "description": "Python worker: executor DAG engine",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement executor.py: Kahn's algorithm topological sort, node execution loop (resolve inputs from node_outputs, instantiate from NODE_REGISTRY, call execute()), send Progress IPC events per node, send Completed event. Tests in test_executor.py: >=7 tests including cycle detection and exception handling. pytest exits 0."
+  },
+  {
+    "id": "P2-A3",
+    "description": "Python worker: BaseNode + NODE_REGISTRY",
+    "prereqs": [
+      "P2-A2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement nodes/base.py (BaseNode ABC with NODE_TYPE, execute() abstract method) and nodes/__init__.py (NODE_REGISTRY dict). pytest exits 0 with >=4 tests."
+  },
+  {
+    "id": "P2-A4",
+    "description": "Python worker: ZiT pipeline nodes",
+    "prereqs": [
+      "P2-A3"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement nodes/zit.py: ZitLoadPipeline, ZitTextEncode, ZitSampler, ZitDecode, SaveImage. ZiT uses guidance_scale=0.0 (distilled, CFG-free), default 8 steps, 1024x1024, seed=-1 means random. Use 'cuda' device string (ROCm maps via HIP). SaveImage sends ImageReady IPC event. Mock mode: return black 1024x1024 PIL Image. ANVILML_WORKER_MOCK=1 pytest exits 0 with >=6 tests."
+  },
+  {
+    "id": "P2-A5",
+    "description": "Python worker: SDXL pipeline nodes",
+    "prereqs": [
+      "P2-A3"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement nodes/sdxl.py: SdxlLoadPipeline, SdxlTextEncode, SdxlSampler, SdxlDecode, SaveImage (shared). SDXL has two text encoders, guidance_scale=7.5, 20 default steps, negative_prompt support. ANVILML_WORKER_MOCK=1 pytest exits 0."
+  },
+  {
+    "id": "P2-A6",
+    "description": "Python worker: wire Execute handler",
+    "prereqs": [
+      "P2-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Wire Execute IPC message to executor.run_graph() in worker_main.py. Progress/ImageReady/Completed events flow back to Rust server. Manual verification: submit ZiT job via API, see Progress events then ImageReady."
+  },
+  {
+    "id": "P2-B1",
+    "description": "anvilml-ipc: ImageReady event type",
+    "prereqs": [
+      "P1-J2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Add ImageReady variant to WorkerEvent enum in messages.rs. Fields exactly match IPC_PROTOCOL.md (image_b64, width, height, format, seed, steps, prompt). Add round-trip test. cargo test -p anvilml-ipc exits 0."
+  },
+  {
+    "id": "P2-B2",
+    "description": "anvilml-core: ArtifactMeta + updated Job type",
+    "prereqs": [
+      "P2-B1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Complete ArtifactMeta struct in types/model.rs, add artifact_count field to Job in types/job.rs, add WsJobImageReady variant to WsEvent in types/events.rs. All shapes match API_CONTRACT.md. cargo test -p anvilml-core exits 0."
+  },
+  {
+    "id": "P2-B3",
+    "description": "anvilml-server: artifact storage module",
+    "prereqs": [
+      "P2-B2"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement ArtifactStore in src/artifact/store.rs: save(job_id, image_b64, meta) decodes base64, computes SHA256, writes PNG to {artifact_dir}/{hash[0..2]}/{hash}.png, records in DB. get(hash), list(job_id). Migration 002_artifacts.sql. Tests use tempdir. cargo test --features mock-hardware exits 0 with >=5 tests."
+  },
+  {
+    "id": "P2-B4",
+    "description": "anvilml-server: GET /v1/artifacts endpoints",
+    "prereqs": [
+      "P2-B3"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Implement handlers/artifacts.rs: GET /v1/artifacts (list, optional ?job_id filter), GET /v1/artifacts/:hash (serve PNG file, Content-Type: image/png). Re-run cargo run -p anvilml-openapi to update openapi.json. cargo test --features mock-hardware exits 0 with >=3 tests."
+  },
+  {
+    "id": "P2-B5",
+    "description": "anvilml-scheduler: handle ImageReady + Completed",
+    "prereqs": [
+      "P2-B3"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "In scheduler.rs: on ImageReady event -> call artifact_store.save(), emit WsJobImageReady. On Completed event -> set job status Completed, update DB. cargo test --features mock-hardware exits 0."
+  },
+  {
+    "id": "P2-B6",
+    "description": "anvilml-server: job.image_ready WebSocket event",
+    "prereqs": [
+      "P2-B5"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Ensure WsJobImageReady is broadcast to all WS clients when ImageReady received. Tests: ImageReady IPC event produces job.image_ready WS event with correct image_url and artifact_hash. cargo test --features mock-hardware exits 0."
+  },
+  {
+    "id": "P2-C1",
+    "description": "BloomeryUI: re-generate types",
+    "prereqs": [
+      "P2-B4"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Run pnpm generate-types to regenerate src/generated/api-types.ts from updated openapi.json. Verify pnpm type-check exits 0. Commit updated generated types."
+  },
+  {
+    "id": "P2-C2",
+    "description": "BloomeryUI: artifacts store + useArtifacts hook",
+    "prereqs": [
+      "P2-C1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Implement artifacts.store.ts (upsertArtifact, list) and useArtifacts.ts hook (WS job.image_ready updates store). pnpm test:run exits 0 with store tests."
+  },
+  {
+    "id": "P2-C3",
+    "description": "BloomeryUI: ArtifactCard + ArtifactGallery",
+    "prereqs": [
+      "P2-C2"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Implement ArtifactCard (img src={artifact.url_path}) and ArtifactGallery (grid layout). Renders empty state + with artifact data. pnpm test:run exits 0."
+  },
+  {
+    "id": "P2-C4",
+    "description": "BloomeryUI: ZitJobForm component",
+    "prereqs": [
+      "P2-C1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Implement ZitJobForm: builds correct 5-node ZiT graph JSON (ZitLoadPipeline->ZitTextEncode->ZitSampler->ZitDecode->SaveImage), form fields (prompt, steps, seed, dtype), validation. pnpm test:run exits 0."
+  },
+  {
+    "id": "P2-C5",
+    "description": "BloomeryUI: JobProgress component",
+    "prereqs": [
+      "P2-C1"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Implement JobProgress: shows progress bar during inference from job.progress WS events. Renders correct percent. pnpm test:run exits 0."
+  },
+  {
+    "id": "P2-C6",
+    "description": "BloomeryUI: TestPanel update (gallery + progress)",
+    "prereqs": [
+      "P2-C3",
+      "P2-C4",
+      "P2-C5"
+    ],
+    "repos": [
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Update TestPanel page to include ArtifactGallery and JobProgress. pnpm build exits 0. Manual verification: gallery and progress visible."
+  },
+  {
+    "id": "P2-D1",
+    "description": "Worker install scripts (Linux + Windows)",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Create backend/scripts/install_worker_deps.sh (Linux: detect ROCm/CUDA/CPU, create .venv, install correct PyTorch wheel) and install_worker_deps.ps1 (Windows equivalent). Scripts are executable and documented in README.md."
+  },
+  {
+    "id": "P2-D2",
+    "description": "Standalone inference test script",
+    "prereqs": [
+      "P2-A4"
+    ],
+    "repos": [
+      "anvilml"
+    ],
+    "phase": "2",
+    "context": "Create backend/scripts/test_inference.py: CLI --model-type zit|sdxl --model-path --prompt --output. Runs inference directly without IPC. Prints timing and VRAM usage. Used for debugging."
+  },
+  {
+    "id": "P2-E1",
+    "description": "Integration: ZiT end-to-end smoke test",
+    "prereqs": [
+      "P2-D2",
+      "P2-C6"
+    ],
+    "repos": [
+      "anvilml",
+      "bloomeryui",
+      "root"
+    ],
+    "phase": "2",
+    "context": "Manual: download z-image-turbo to models/diffusion/, start sindristudio, submit ZiT job via ZitJobForm, verify image appears in gallery, verify VRAM reported correctly, verify second job faster (model cached). Document in P2-E1 report."
+  },
+  {
+    "id": "P2-E2",
+    "description": "Integration: SDXL end-to-end smoke test",
+    "prereqs": [
+      "P2-A5",
+      "P2-C6"
+    ],
+    "repos": [
+      "anvilml",
+      "bloomeryui"
+    ],
+    "phase": "2",
+    "context": "Manual: SDXL model smoke test. Same verification sequence as ZiT. Verify both models run sequentially. Document in P2-E2 report."
+  },
+  {
+    "id": "P2-E3",
+    "description": "CI: mock inference in Python worker tests",
+    "prereqs": [
+      "P2-A6"
+    ],
+    "repos": [
+      "anvilml",
+      "root"
+    ],
+    "phase": "2",
+    "context": "Ensure all test_nodes_zit.py tests work with ANVILML_WORKER_MOCK=1. Add ANVILML_WORKER_MOCK=1 to python-worker CI job. Verify CI green."
+  }
+]

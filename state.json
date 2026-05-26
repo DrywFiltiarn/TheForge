@@ -1,0 +1,11 @@
+{
+  "completed": [],
+  "in_progress": null,
+  "plan_approved": false,
+  "current_plan": null,
+  "failed": [],
+  "needs_review": [],
+  "last_updated": null,
+  "plan_message_id": null,
+  "report_message_id": null
+}

@@ -1,0 +1,345 @@
+# SindriStudio — Cline Autonomous Development Rules
+# Version: 2.1 — Forge Edition
+# Governs ALL Cline sessions across SindriStudio, AnvilML, and BloomeryUI.
+# Read this file COMPLETELY before taking any action in any session.
+# This file is placed in the SindriStudio root repo and applies to all submodule sessions.
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PRIME DIRECTIVE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# ONE TASK PER SESSION. Every session executes exactly this cycle:
+#
+#   STEP 1 — PLAN       Read spec. Write plan to report. No code yet. STOP.
+#   STEP 2 — IMPLEMENT  Write exactly what the plan defines. Tests included.
+#   STEP 3 — TEST       Run all tests. All must pass. Record results.
+#   STEP 4 — COMMIT     Commit + push. Finalize report. Call new_task. STOP.
+#
+# When step 4 is complete, call new_task and STOP. Do nothing else.
+# Never combine two tasks into one session, even if the second seems trivial.
+# Never start step 2 until the plan is complete (report plan section written).
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## PRODUCT IDENTITY
+- Product:            SindriStudio
+- Launcher binary:    sindristudio / sindristudio.exe
+- Backend submodule:  AnvilML    → backend/   (https://github.com/DrywFiltiarn/AnvilML.git)
+- Frontend submodule: BloomeryUI → frontend/  (https://github.com/DrywFiltiarn/BloomeryUI.git)
+- Root repo:          https://github.com/DrywFiltiarn/SindriStudio.git
+- Active branch:      develop
+- Production branch:  main
+
+## FORGE ORCHESTRATION — HOW THIS SESSION WAS STARTED
+# This session was launched by forge.py, the Forge Orchestrator.
+# The Forge is running as a long-lived Python process outside this session.
+# Your job is to complete the task injected into this session's prompt.
+# When STEP 4 is complete, call new_task — the Forge will handle what happens next.
+# Do not attempt to communicate with the Forge or read forge/ directory files.
+
+## SESSION INITIALIZATION — EXECUTE IN ORDER BEFORE TOUCHING ANY FILE
+
+1. Read `.cline/state/CURRENT_TASK.md`
+   - Does not exist → fresh start. Read docs/TASKS_PHASE1.md, begin task P1-A1.
+   - Exists → read completely. This defines what you are doing right now.
+
+2. Read the previous task report if it exists:
+   `.cline/reports/{previous-task-id}.md`
+   - Verify every file listed under "Files Created" actually exists on disk.
+   - If any claimed file is missing: STOP. Report to user. Do not proceed.
+   - If all files verified: continue.
+
+3. Read relevant docs (always read ENVIRONMENT.md and ARCHITECTURE.md):
+   - docs/ENVIRONMENT.md          — always
+   - docs/ARCHITECTURE.md         — always
+   - docs/API_CONTRACT.md         — any task touching API, server, or frontend
+   - docs/IPC_PROTOCOL.md         — any task touching worker, scheduler, or IPC
+   - docs/TESTING_STRATEGY.md     — any task writing tests
+   - docs/TASKS_PHASE{N}.md       — the current phase task list
+
+4. Verify prerequisites for the current task (listed in each task spec).
+   If a prerequisite is not met: STOP and report to user.
+
+## STEP 1 — PLAN (no code)
+
+- Read the task spec fully from docs/TASKS_PHASE{N}.md.
+- Create `.cline/reports/{TASK-ID}.md` and write the Plan section:
+  - Every file to be created or modified with purpose
+  - How correctness will be verified
+  - Any decisions made that are not in the spec
+- Update CURRENT_TASK.md: Step = 1-PLAN, Status = COMPLETE
+- Do NOT write any application or test code during this step.
+- After writing the report plan section and updating CURRENT_TASK.md: STOP.
+  The Forge will read the plan and request approval before proceeding.
+  When this session resumes with the approved plan, begin STEP 2.
+
+## STEP 2 — IMPLEMENT (code + tests together)
+
+- Implement only what is in the plan. Scope is fixed at step 1.
+- If you find yourself creating a file not in the plan:
+  STOP. Does it belong to this task? If yes, update plan section of report first.
+  If no, note it as a future task and do not create it.
+- Write application code AND test code in this step. Tests are not a separate step.
+- After all files written: run the build.
+  - Backend: `cargo build` from backend/
+  - Frontend: `pnpm build` from frontend/
+  - Build must succeed before moving to step 3. Fix failures now.
+- Update CURRENT_TASK.md: Step = 2-IMPLEMENT, list all created/modified files.
+
+## STEP 3 — TEST (all tests must pass)
+
+Run tests for the affected scope:
+
+  Backend (one crate changed):    cargo test -p {crate-name} -- --nocapture
+  Backend (multiple crates):      cargo test -- --nocapture
+  Frontend:                       pnpm test --run (from frontend/)
+  Python worker:                  ANVILML_WORKER_MOCK=1 python -m pytest backend/worker/tests/ -v
+
+Rules:
+- ALL tests must pass. Zero failing tests at commit time.
+- Do not comment out, skip, or mark tests as ignored to force a pass.
+- If tests fail: fix the code (return to step 2 logic). Re-run tests.
+  Repeat until passing. This is normal — stay in the session.
+- Capture the complete test output.
+- Write test results to the report (commands run, exit codes, pass/fail counts).
+- Update CURRENT_TASK.md: Step = 3-TEST, record results.
+
+## STEP 4 — COMMIT (commit + push + report + new_task)
+
+Execute commits in this exact order. Only commit repos that were modified.
+
+```bash
+# Backend (if modified)
+cd backend
+git add -A
+git commit -m "feat(scope): description
+
+Task: {TASK-ID}
+Tests: {N} passed, 0 failed"
+git push origin develop
+
+# Frontend (if modified)
+cd ../frontend
+git add -A
+git commit -m "feat(scope): description
+
+Task: {TASK-ID}
+Tests: {N} passed, 0 failed"
+git push origin develop
+
+# Root repo (always — submodule pointers + report + state files)
+cd ..
+git add -A
+git commit -m "chore(root): update submodules and report for {TASK-ID}
+
+Task: {TASK-ID}"
+git push origin develop
+```
+
+Then:
+1. Write the final section of `.cline/reports/{TASK-ID}.md`
+2. Update `.cline/state/CURRENT_TASK.md` to point to the next task ID, Step = 1-PLAN
+3. Call new_task with the handoff block (see format below)
+4. STOP — do nothing else
+
+## CONTEXT WINDOW
+
+Context management is a fallback, not a routine. Tasks are sized to complete in one
+session. The 4-step cycle should complete without hitting context limits.
+
+Emergency only — if context is genuinely exhausted mid-step:
+- Complete the current file or function (never stop mid-file)
+- Run whatever tests are possible in the current state
+- Commit what passes (note partial state clearly in commit message)
+- Write a partial report noting EXACTLY where you stopped and what remains
+- Set CURRENT_TASK.md Step to the step you are still on (not the next step)
+- Use new_task to CONTINUE THE SAME TASK — do not advance to the next task
+
+## CURRENT_TASK.md FORMAT
+
+```
+# Current Task: {TASK-ID}
+
+## Task
+{One-line description}
+
+## Phase
+{N — Phase name}
+
+## Step
+{1-PLAN | 2-IMPLEMENT | 3-TEST | 4-COMMIT}
+
+## Step 1: Plan
+Status: {PENDING | COMPLETE}
+Report written: {yes | no}
+
+## Step 2: Implement
+Status: {PENDING | IN-PROGRESS | COMPLETE}
+Files created:
+  - (list paths)
+Files modified:
+  - (list paths)
+Build status: {not run | passing | failing}
+
+## Step 3: Test
+Status: {PENDING | IN-PROGRESS | COMPLETE | FAILED}
+Commands run:
+  - {command} → exit {N}
+Result: {N passed, N failed}
+
+## Step 4: Commit
+Status: {PENDING | COMPLETE}
+Backend commit:  {hash | N/A}
+Frontend commit: {hash | N/A}
+Root commit:     {hash}
+Pushed: {yes | no}
+
+## Next Task
+{NEXT-TASK-ID}
+```
+
+## REPORT FORMAT — .cline/reports/{TASK-ID}.md
+
+```markdown
+# Task Report: {TASK-ID}
+{Task description}
+Phase: {N} — {Phase name}
+Date: {YYYY-MM-DD}
+
+## Plan
+
+### Objective
+{What this task achieves and why it exists}
+
+### Files to Create
+- `path` — purpose
+
+### Files to Modify
+- `path` — what changes and why
+
+### Verification Strategy
+{How you will know the implementation is correct}
+
+### Decisions
+{Choices made not specified in the task spec, with reasoning. "None" if none.}
+
+---
+
+## Implementation
+
+### Created
+- `path` — what was implemented, key design choices
+
+### Modified
+- `path` — what changed
+
+### Deviations from Plan
+{Changes from the plan above with justification. "None" if none.}
+
+---
+
+## Test Results
+
+### Commands
+{command}
+{full stdout/stderr output}
+Exit code: N
+
+### Summary
+Tests passed:  N
+Tests failed:  N
+Tests skipped: N
+Build warnings: N
+
+### Notes
+{What is tested, what is not tested yet and why}
+
+---
+
+## Commit
+
+Backend:  {hash} — {message first line}
+Frontend: {hash | N/A}
+Root:     {hash} — {message first line}
+
+## Status
+COMPLETE ✓
+Next: {NEXT-TASK-ID} — {description}
+```
+
+## new_task HANDOFF FORMAT
+
+```
+SindriStudio Handoff
+Completed: {TASK-ID} — {description}
+
+Steps completed:
+  1 PLAN:      ✓
+  2 IMPLEMENT: ✓ (N files created, N modified)
+  3 TEST:      ✓ (N tests passed, 0 failed)
+  4 COMMIT:    ✓ pushed to develop
+
+Commits:
+  backend:  {hash | N/A}
+  frontend: {hash | N/A}
+  root:     {hash}
+
+Report: .cline/reports/{TASK-ID}.md
+
+Next task: {NEXT-TASK-ID} — {description}
+Prerequisites: {list | none}
+
+Start instructions:
+  1. Read .cline/state/CURRENT_TASK.md
+  2. Verify .cline/reports/{TASK-ID}.md — check files exist on disk
+  3. Read docs/TASKS_PHASE{N}.md task {NEXT-TASK-ID}
+  4. Begin Step 1 — PLAN (no code)
+```
+
+## CODING STANDARDS
+
+### Rust
+- Edition 2021, workspace at backend/Cargo.toml
+- `anyhow` for application errors, `thiserror` for library crate errors
+- `tracing` for all logging, `#[tracing::instrument]` on async public functions
+- No `unwrap()` or `expect()` outside `#[cfg(test)]`
+- `cargo fmt` and `cargo clippy -- -D warnings` must pass before commit
+- Unit tests in `#[cfg(test)]` blocks within the same file
+- Integration tests in `backend/tests/`
+- New module: add to parent `mod.rs` in the same commit
+
+### TypeScript
+- `"strict": true` — no exceptions
+- No `any` — use `unknown` with type guards
+- `src/generated/` — OpenAPI-generated types, never hand-edit
+- `src/api/` — hand-written client importing from `src/generated/`
+- `pnpm type-check` and `pnpm lint` must pass before commit
+
+### Python
+- Python 3.12, type hints on all signatures
+- `torch.backends.cuda.matmul.allow_tf32 = False` at worker startup
+- IPC only through `ipc.py`
+- pytest for all tests
+
+### Git commits
+Format: `{type}({scope}): {description}`
+Body must include: `Task: {TASK-ID}` and `Tests: N passed, 0 failed`
+Types: feat | fix | chore | docs | test | refactor
+Scopes: core | server | scheduler | worker | hardware | registry | launcher |
+        ui | store | api | ipc | ci
+
+## STOP AND ASK THE USER WHEN
+- Any API shape differs from docs/API_CONTRACT.md
+- Any IPC field name or type differs from docs/IPC_PROTOCOL.md
+- A dependency breaking change affects the architecture
+- A prerequisite task's output cannot be verified on disk
+- A task acceptance criterion is genuinely ambiguous after reading all docs
+
+## NEVER
+- Mark a step complete without actually completing and verifying it
+- Commit failing tests or a failing failing build
+- Implement two tasks in one session
+- Skip the report
+- Push to main
+- Hand-edit `src/generated/` files
+- Use `unwrap()` in production code paths
+- Read or modify anything under the forge/ directory

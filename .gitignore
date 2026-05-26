@@ -1,0 +1,16 @@
+# Local environment — contains secrets
+forge.env
+
+# venv
+.venv
+
+# Runtime logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# State is committed (intentional — enables resume)
+# state.json is NOT ignored
