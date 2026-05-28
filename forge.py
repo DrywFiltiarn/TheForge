@@ -58,10 +58,11 @@ def _encode_emoji(emoji: str) -> str:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 FORGE_DIR = Path(__file__).parent.resolve()
-REPO_ROOT = FORGE_DIR.parent  # SindriStudio root
+REPO_ROOT = Path("/home/dryw/sandbox")  # SindriStudio root
 STATE_FILE = FORGE_DIR / "state.json"
 TASKS_FILE = FORGE_DIR / "tasks.json"
-LOG_FILE = FORGE_DIR / "forge.log"
+LOG_FILE       = FORGE_DIR / "forge.log"
+CLINE_LOG_FILE = FORGE_DIR / "cline.log"
 
 # Discord — bot token and guild ID still come from environment (secrets)
 DISCORD_BOT_TOKEN = os.environ.get("FORGE_DISCORD_TOKEN", "")
@@ -82,6 +83,13 @@ CLINE_BIN = os.environ.get("FORGE_CLINE_BIN", "cline")
 CLINE_TIMEOUT = int(os.environ.get("FORGE_CLINE_TIMEOUT", str(60 * 90)))  # 90 min
 CLINE_RETRIES = int(os.environ.get("FORGE_CLINE_RETRIES", "3"))
 CLINE_RETRY_DELAY = int(os.environ.get("FORGE_CLINE_RETRY_DELAY", "60"))
+
+# Model IDs — llama-swap variants, selected via -M flag.
+# Sampling parameters are applied server-side by llama-swap's setParamsByID.
+# planning: used for STEP 1 (Cline plan mode) across all tasks
+# coding:   used for STEP 2-4 (Cline act mode) across all tasks
+MODEL_PLANNING = os.environ.get("FORGE_MODEL_PLANNING", "Qwen3.6-35B-A3B:planning")
+MODEL_CODING   = os.environ.get("FORGE_MODEL_CODING",   "Qwen3.6-35B-A3B:coding")
 
 # Approval
 APPROVAL_POLL_INTERVAL = int(os.environ.get("FORGE_POLL_INTERVAL", "10"))
@@ -197,6 +205,220 @@ def print_dag_status(tasks: list[dict], state: dict) -> None:
         print(f"{tid:<12} {status:<14} {task['description']}")
     print()
 
+# ─── PDF generation ───────────────────────────────────────────────────────────
+
+PDF_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a2e;
+    --muted: #4a5568;
+    --accent: #2563eb;
+    --border: #e2e8f0;
+    --code-bg: #f1f5f9;
+    --heading: #0f172a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+@page {
+    size: A4;
+    margin: 24mm 20mm 24mm 20mm;
+    @bottom-right {
+        content: counter(page);
+        font-size: 9pt;
+        color: #94a3b8;
+    }
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.65;
+    color: var(--text);
+    background: var(--bg);
+}
+
+h1 {
+    font-size: 20pt;
+    font-weight: 600;
+    color: var(--heading);
+    margin-bottom: 6pt;
+    padding-bottom: 8pt;
+    border-bottom: 2px solid var(--accent);
+}
+
+h2 {
+    font-size: 14pt;
+    font-weight: 600;
+    color: var(--heading);
+    margin-top: 18pt;
+    margin-bottom: 6pt;
+    padding-bottom: 4pt;
+    border-bottom: 1px solid var(--border);
+}
+
+h3 {
+    font-size: 11pt;
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 12pt;
+    margin-bottom: 4pt;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+p { margin-bottom: 8pt; color: var(--text); }
+
+ul, ol {
+    margin-left: 16pt;
+    margin-bottom: 8pt;
+}
+
+li { margin-bottom: 3pt; }
+
+code {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 9pt;
+    background: var(--code-bg);
+    padding: 1pt 4pt;
+    border-radius: 3pt;
+    color: #c7254e;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4pt;
+    padding: 10pt 12pt;
+    margin: 8pt 0;
+    overflow-x: auto;
+    page-break-inside: avoid;
+}
+
+pre code {
+    font-size: 8.5pt;
+    background: none;
+    padding: 0;
+    color: var(--text);
+}
+
+blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 8pt 0;
+    padding: 6pt 12pt;
+    background: #eff6ff;
+    color: var(--muted);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10pt 0;
+    font-size: 9.5pt;
+}
+
+th {
+    background: var(--code-bg);
+    font-weight: 600;
+    padding: 5pt 8pt;
+    border: 1px solid var(--border);
+    text-align: left;
+}
+
+td {
+    padding: 5pt 8pt;
+    border: 1px solid var(--border);
+}
+
+tr:nth-child(even) td { background: #f8fafc; }
+
+hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 14pt 0;
+}
+
+strong { font-weight: 600; color: var(--heading); }
+em { color: var(--muted); }
+
+.header-meta {
+    font-size: 9pt;
+    color: var(--muted);
+    margin-bottom: 14pt;
+}
+"""
+
+def _markdown_to_pdf(markdown_text: str, title: str = "") -> Optional[bytes]:
+    """
+    Convert a markdown string to PDF bytes using weasyprint.
+    Returns bytes on success, None on failure (caller falls back to plain text).
+    """
+    try:
+        import markdown as md_lib
+        html_body = md_lib.markdown(
+            markdown_text,
+            extensions=["fenced_code", "tables", "codehilite", "toc", "nl2br"],
+        )
+    except ImportError:
+        # markdown library not available — do minimal conversion
+        import html as html_mod
+        lines = markdown_text.splitlines()
+        html_lines = []
+        in_code = False
+        for line in lines:
+            if line.startswith("```"):
+                if in_code:
+                    html_lines.append("</code></pre>")
+                    in_code = False
+                else:
+                    html_lines.append("<pre><code>")
+                    in_code = True
+            elif in_code:
+                html_lines.append(html_mod.escape(line))
+            elif line.startswith("### "):
+                html_lines.append(f"<h3>{html_mod.escape(line[4:])}</h3>")
+            elif line.startswith("## "):
+                html_lines.append(f"<h2>{html_mod.escape(line[3:])}</h2>")
+            elif line.startswith("# "):
+                html_lines.append(f"<h1>{html_mod.escape(line[2:])}</h1>")
+            elif line.startswith("- ") or line.startswith("* "):
+                html_lines.append(f"<li>{html_mod.escape(line[2:])}</li>")
+            elif line.strip() == "---":
+                html_lines.append("<hr>")
+            elif line.strip():
+                html_lines.append(f"<p>{html_mod.escape(line)}</p>")
+            else:
+                html_lines.append("<br>")
+        html_body = "\n".join(html_lines)
+
+    title_html = f"<title>{title}</title>" if title else ""
+    clean_title = re.sub(r"\.(pdf|md|txt)$", "", title) if title else "Report"
+
+    full_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+{title_html}
+<style>{PDF_CSS}</style>
+</head>
+<body>
+<div class="header-meta">SindriStudio Forge · {clean_title}</div>
+{html_body}
+</body>
+</html>"""
+
+    try:
+        from weasyprint import HTML, CSS
+        pdf_bytes = HTML(string=full_html).write_pdf()
+        return pdf_bytes
+    except Exception as e:
+        log_warn(f"weasyprint PDF generation failed: {e}")
+        return None
+
+
 # ─── Discord client ───────────────────────────────────────────────────────────
 
 class DiscordClient:
@@ -237,31 +459,73 @@ class DiscordClient:
     def send_message(self, channel_id: str, content: str,
                      embeds: Optional[list] = None) -> Optional[str]:
         payload: dict = {}
-        # Discord messages: content max 2000 chars, embed description max 4096
         if len(content) <= 2000:
             payload["content"] = content
         else:
-            # Overflow into embed
             payload["embeds"] = [{"description": content[:4096]}]
-
         if embeds:
             payload["embeds"] = embeds
-
         result = self._post(f"/channels/{channel_id}/messages", payload)
         return result["id"] if result else None
 
+    def send_file(self, channel_id: str, caption: str,
+                  filename: str, file_content: str) -> Optional[str]:
+        """
+        Convert markdown to PDF and post as a Discord attachment.
+        PDF renders inline on iOS via QuickLook without requiring a download.
+        filename should end in .pdf — the base name is used for the PDF title.
+        Falls back to plain .txt attachment if PDF generation fails.
+        Returns the message ID or None on failure.
+        """
+        # Ensure filename ends in .pdf
+        pdf_filename = re.sub(r"\.(md|txt|html)$", "", filename) + ".pdf"
+
+        pdf_bytes = _markdown_to_pdf(file_content, title=pdf_filename)
+
+        try:
+            headers = {"Authorization": self.headers["Authorization"]}
+            if pdf_bytes:
+                files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
+                log(f"Discord send_file: sending PDF ({len(pdf_bytes)} bytes) as {pdf_filename}")
+            else:
+                # Fallback to plain text if PDF generation failed
+                log_warn("PDF generation failed — sending as plain text")
+                txt_filename = pdf_filename.replace(".pdf", ".txt")
+                files = {"file": (txt_filename, file_content.encode("utf-8"), "text/plain; charset=utf-8")}
+
+            data = {"content": caption[:2000]}
+            r = requests.post(
+                f"{self.BASE}/channels/{channel_id}/messages",
+                headers=headers,
+                data=data,
+                files=files,
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()["id"]
+        except Exception as e:
+            log_warn(f"Discord send_file failed: {e} — falling back to inline message")
+            return self.send_message(channel_id, f"{caption}\n\n```\n{file_content[:1800]}\n```")
+
     def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> bool:
-        """Add a reaction. emoji can be raw Unicode, percent-encoded, or name:id."""
+        """Add a reaction. emoji can be raw Unicode, percent-encoded, or name:id.
+        Handles 429 rate-limit with a single retry using the retry_after header."""
         try:
             encoded = _encode_emoji(emoji)
-            r = requests.put(
-                f"{self.BASE}/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me",
-                headers={k: v for k, v in self.headers.items() if k != "Content-Type"},
-                timeout=10,
-            )
+            url = f"{self.BASE}/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
+            headers = {k: v for k, v in self.headers.items() if k != "Content-Type"}
+
+            r = requests.put(url, headers=headers, timeout=10)
+
+            if r.status_code == 429:
+                retry_after = float(r.json().get("retry_after", 1.0))
+                log_warn(f"Discord add_reaction rate-limited — retrying after {retry_after}s")
+                time.sleep(retry_after + 0.1)
+                r = requests.put(url, headers=headers, timeout=10)
+
             if r.status_code not in (200, 204):
                 log_warn(f"Discord add_reaction HTTP {r.status_code} for emoji {encoded!r}"
-                         f" — 403=missing permission, 400=unknown emoji")
+                         f" — 403=missing permission, 400=unknown emoji, 429=rate limited")
             return r.status_code in (200, 204)
         except Exception as e:
             log_warn(f"Discord add_reaction failed: {e}")
@@ -443,6 +707,79 @@ def collect_commit_info(task: dict) -> dict:
             info[repo_key] = {"commits": commits, "changed_files": changed}
     return info
 
+def _forge_commit_root(task_id: str, task_desc: str) -> Optional[str]:
+    """
+    Commit and push the SindriStudio root repo.
+
+    Stages everything in the root repo:
+      - Updated submodule pointers (backend, frontend)
+      - .cline/reports/{task_id}.md
+      - .cline/state/CURRENT_TASK.md
+      - Any other root-level files changed by Cline
+
+    Returns the short commit hash on success, None if nothing to commit or on error.
+    This function is always called by the Forge after a successful act phase —
+    it is NOT delegated to Cline.
+    """
+    try:
+        # Stage everything in the root repo
+        stage = subprocess.run(
+            ["git", "add", "-A"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        if stage.returncode != 0:
+            log_err(f"[git] root git add -A failed: {stage.stderr}")
+            return None
+
+        # Check if there is actually anything to commit
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        if not status.stdout.strip():
+            log(f"[git] Root repo: nothing to commit for {task_id}")
+            return None
+
+        # Commit
+        commit_msg = (
+            f"chore(root): update submodules and reports for {task_id}\n\n"
+            f"Task: {task_id}\n"
+            f"Description: {task_desc}\n"
+            f"Committed by Forge orchestrator"
+        )
+        commit = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        if commit.returncode != 0:
+            log_err(f"[git] root commit failed: {commit.stderr}")
+            return None
+
+        # Push
+        push = subprocess.run(
+            ["git", "push", "origin", "develop"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        if push.returncode != 0:
+            log_err(f"[git] root push failed: {push.stderr}")
+            # Commit succeeded but push failed — return hash with warning
+            hash_result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=REPO_ROOT, capture_output=True, text=True,
+            )
+            return f"{hash_result.stdout.strip()} (NOT PUSHED)"
+
+        # Return short hash
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        return hash_result.stdout.strip()
+
+    except Exception as e:
+        log_err(f"[git] _forge_commit_root exception: {e}")
+        return None
+
 # ─── Disk report files ────────────────────────────────────────────────────────
 
 def write_forge_plan_report(task: dict, plan_text: str, attempt: int) -> Path:
@@ -496,65 +833,72 @@ def extract_plan_section(report_text: str, task_id: str) -> str:
 
 # ─── Discord message formatting ───────────────────────────────────────────────
 
-def format_report_broadcast(task: dict, section: str, content: str) -> str:
+def _extract_section(report_text: str, heading: str) -> str:
+    """Extract a named ## section from a markdown report. Returns '' if not found."""
+    match = re.search(
+        rf"^## {re.escape(heading)}\n(.*?)(?=^##|\Z)",
+        report_text, re.DOTALL | re.MULTILINE
+    )
+    return match.group(1).strip() if match else ""
+
+def _extract_subsection(report_text: str, heading: str) -> str:
+    """Extract a named ### subsection from a markdown report."""
+    match = re.search(
+        rf"^### {re.escape(heading)}\n(.*?)(?=^###|^##|\Z)",
+        report_text, re.DOTALL | re.MULTILINE
+    )
+    return match.group(1).strip() if match else ""
+
+def _bullet_lines(text: str, max_lines: int = 6) -> str:
+    """Return up to max_lines non-empty lines from text, each prefixed with a bullet."""
+    lines = [l.strip("- •\t ") for l in text.splitlines() if l.strip("- •\t ")]
+    return "\n".join(f"• {l}" for l in lines[:max_lines])
+
+def format_report_caption(task: dict, section: str) -> str:
     """
-    Format a message for #forge-reports (broadcast, no approval).
-    section: 'PLAN' or 'IMPLEMENTATION'
+    One-line caption posted above the attached .md file in #forge-reports.
+    The full report is in the attachment — no extraction needed.
     """
-    tid = task["id"]
-    desc = task["description"]
+    tid   = task["id"]
+    desc  = task["description"]
     phase = task.get("phase", "?")
-
-    header = f"**📋 {section} REPORT — Task `{tid}` (Phase {phase})**"
-    body = content[:3800] if len(content) > 3800 else content
-
+    icon  = "📋" if section == "PLAN" else "📦"
+    gate  = "Approval request in #forge-approvals"
     return (
-        f"{header}\n"
-        f"**{desc}**\n"
-        f"*See #forge-approvals for the matching approval request.*\n\n"
-        f"```markdown\n{body}\n```"
+        f"{icon} **{section} REPORT — `{tid}` (Phase {phase})**\n"
+        f"_{desc}_\n"
+        f"_{gate}_"
     )
 
-def format_plan_approval_request(task: dict, plan_text: str, attempt: int,
+def format_plan_approval_request(task: dict, attempt: int,
                                   feedback: str = "") -> str:
     """
-    Format an approval request for #forge-approvals.
-    Includes a clear reference to the task ID for cross-referencing
-    with the plan report posted in #forge-reports.
+    Minimal approval request for #forge-approvals.
+    Full plan is in the attached file in #forge-reports — nothing is extracted here.
     """
-    tid = task["id"]
-    desc = task["description"]
+    tid     = task["id"]
+    desc    = task["description"]
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
-    repos = ", ".join(task.get("repos", ["root"]))
+    repos   = ", ".join(task.get("repos", ["root"]))
 
-    header = f"**🔐 PLAN APPROVAL REQUEST — Task `{tid}`**"
+    header = f"**🔐 PLAN APPROVAL — `{tid}`**"
     if attempt > 1:
-        header += f" *(Revision {attempt})*"
-
-    summary = plan_text[:1200] if len(plan_text) > 1200 else plan_text
+        header += f" *(revision {attempt})*"
 
     parts = [
         header,
-        f"",
-        f"**Description:** {desc}",
-        f"**Prerequisites:** {prereqs}",
-        f"**Repos:** {repos}",
-        f"",
-        f"*Full plan report is in #forge-reports — search for `{tid}`.*",
+        f"**{desc}**",
+        f"Repos: `{repos}` · Prereqs: `{prereqs}`",
     ]
 
     if feedback:
-        parts += ["", f"**📝 Revision feedback applied:** {feedback}"]
+        parts += ["", f"📝 _Revision feedback: {feedback}_"]
 
     parts += [
         "",
-        f"**Plan summary:**",
-        f"```markdown",
-        summary,
-        f"```",
+        f"_Full plan report attached in #forge-reports → search `{tid}`_",
         "",
-        f"✅ **React to approve** — Cline will proceed to implementation.",
-        f"❌ **React to reject** — Reply with feedback, then react ❌.",
+        f"✅ approve · ❌ reject (reply with feedback then react)",
     ]
 
     return "\n".join(parts)
@@ -592,37 +936,28 @@ def format_push_approval_request(task: dict, commit_info: dict) -> str:
 
     return "\n".join(parts)
 
-def format_implementation_report_broadcast(task: dict, commit_info: dict,
-                                            report_text: str) -> str:
-    """Format the implementation report for #forge-reports (broadcast, no approval)."""
-    tid = task["id"]
+def format_implementation_caption(task: dict, commit_info: dict) -> str:
+    """
+    Caption posted above the attached implementation report .md file in #forge-reports.
+    Shows commit hashes only — the full report is in the attachment.
+    """
+    tid  = task["id"]
     desc = task["description"]
+    phase = task.get("phase", "?")
 
     parts = [
-        f"**📋 IMPLEMENTATION REPORT — Task `{tid}`**",
-        f"**{desc}**",
-        f"*Push approval request is in #forge-approvals.*",
-        f"",
+        f"**📦 IMPLEMENTATION REPORT — `{tid}` (Phase {phase})**",
+        f"_{desc}_",
+        f"_Push approval request in #forge-approvals_",
+        "",
     ]
 
     for repo, info in commit_info.items():
         if info.get("commits"):
-            parts.append(f"**{repo} commits:**")
+            parts.append(f"**{repo}:**")
             for c in info["commits"][:3]:
                 parts.append(f"  `{c}`")
-        if info.get("changed_files"):
-            files = info["changed_files"][:10]
-            parts.append(f"**{repo} files changed:** {', '.join(files)}")
-        parts.append("")
-
-    if report_text:
-        # Extract the test results section for the broadcast
-        test_match = re.search(
-            r"## Test Results\n(.*?)(?=^##|\Z)", report_text, re.DOTALL | re.MULTILINE
-        )
-        if test_match:
-            excerpt = test_match.group(0)[:1200]
-            parts += [f"**Test results excerpt:**", f"```", excerpt, f"```"]
+            parts.append("")
 
     return "\n".join(parts)
 
@@ -633,6 +968,8 @@ def wait_for_approval(
     approvals_channel_id: str,
     message_id: str,
     timeout: int = APPROVAL_TIMEOUT,
+    reports_channel_id: Optional[str] = None,
+    report_message_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     Poll for ✅ or ❌ reaction on message_id in #forge-approvals.
@@ -640,6 +977,10 @@ def wait_for_approval(
 
     Only reactions from FORGE_OWNER_ID are acted upon. Any reaction from
     a different user ID is logged and ignored — the poll continues.
+
+    If reports_channel_id and report_message_id are provided, the outcome
+    reaction is also added to the matching report in #forge-reports so the
+    decision is visible to anyone reading that channel.
     """
     if dc is None:
         log_warn("Discord not configured — auto-approving")
@@ -648,6 +989,11 @@ def wait_for_approval(
     log(f"Waiting for approval on message {message_id} (owner: {FORGE_OWNER_ID}, timeout {timeout}s)...")
     deadline = time.monotonic() + timeout
     last_reminder = time.monotonic()
+
+    def mirror_reaction(emoji: str) -> None:
+        """Add the outcome reaction to the report message in #forge-reports."""
+        if reports_channel_id and report_message_id:
+            dc.add_reaction(reports_channel_id, report_message_id, emoji)
 
     while time.monotonic() < deadline:
         time.sleep(APPROVAL_POLL_INTERVAL)
@@ -659,9 +1005,20 @@ def wait_for_approval(
                 continue
             if u.get("id") == FORGE_OWNER_ID:
                 log(f"✅ Approved by owner ({u.get('username', 'unknown')})")
+                mirror_reaction(EMOJI_APPROVE)
+                dc.send_message(
+                    approvals_channel_id,
+                    f"✅ **Approval registered** — reaction picked up from "
+                    f"{u.get('username', 'owner')}. Cline is proceeding."
+                )
                 return True, ""
             else:
                 log_warn(f"⚠️  Ignoring ✅ from non-owner user {u.get('id')} ({u.get('username', '?')})")
+                dc.send_message(
+                    approvals_channel_id,
+                    f"⚠️ Reaction from `{u.get('username', u.get('id', '?'))}` ignored — "
+                    f"only the server owner can approve."
+                )
 
         # Check ❌ — only count if it's from the owner
         rejectors = dc.get_reactions(approvals_channel_id, message_id, EMOJI_REJECT)
@@ -678,9 +1035,28 @@ def wait_for_approval(
                     if not author.get("bot", False) and author.get("id") == FORGE_OWNER_ID:
                         feedback = msg.get("content", "").strip()
                         break
+                mirror_reaction(EMOJI_REJECT)
+                if feedback:
+                    dc.send_message(
+                        approvals_channel_id,
+                        f"❌ **Rejection registered** — feedback received: _{feedback}_\n"
+                        f"Cline will revise the plan."
+                    )
+                else:
+                    dc.send_message(
+                        approvals_channel_id,
+                        f"❌ **Rejection registered** — no feedback reply found.\n"
+                        f"Cline will re-plan. Reply with feedback before reacting next time "
+                        f"so the revision has direction."
+                    )
                 return False, feedback
             else:
                 log_warn(f"⚠️  Ignoring ❌ from non-owner user {u.get('id')} ({u.get('username', '?')})")
+                dc.send_message(
+                    approvals_channel_id,
+                    f"⚠️ Reaction from `{u.get('username', u.get('id', '?'))}` ignored — "
+                    f"only the server owner can reject."
+                )
 
         if time.monotonic() - last_reminder > 300:
             last_reminder = time.monotonic()
@@ -691,7 +1067,8 @@ def wait_for_approval(
 
 # ─── Cline subprocess ─────────────────────────────────────────────────────────
 
-def build_cline_cmd(prompt: str, plan_mode: bool, cwd: Path) -> list[str]:
+def build_cline_cmd(prompt: str, plan_mode: bool, cwd: Path,
+                    model_id: Optional[str] = None) -> list[str]:
     cmd = [CLINE_BIN]
     if plan_mode:
         cmd.append("-p")
@@ -701,8 +1078,97 @@ def build_cline_cmd(prompt: str, plan_mode: bool, cwd: Path) -> list[str]:
         "--timeout", str(CLINE_TIMEOUT),
         "--cwd", str(cwd),
     ])
+    if model_id:
+        cmd.extend(["-M", model_id])
     cmd.append(prompt)
     return cmd
+
+def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
+    """
+    Write a human-readable line to cline.log for a single Cline NDJSON event.
+
+    Token accumulation: content_start events carry individual tokens (~one word).
+    We buffer them and flush as a complete paragraph when a non-token event
+    arrives or when the buffer gets long enough, so tail -f shows readable prose
+    rather than one JSON blob per word.
+
+    Event type mapping:
+      agent_event / content_start  → accumulate tokens, flush on paragraph break
+      agent_event / content_block_stop → flush token buffer as a line
+      tool_use                     → "  ▶ tool_name(params)"
+      tool_result                  → "  ◀ result summary"
+      system / info / error        → prefixed plain text
+      anything else                → skip (noise)
+    """
+    etype = event.get("type", "")
+    ts    = event.get("ts", "")[-8:-1] if event.get("ts") else ""  # HH:MM:SS
+
+    def flush_tokens() -> None:
+        if token_buf:
+            text = "".join(token_buf).strip()
+            if text:
+                clf.write(f"  {text}\n")
+                clf.flush()
+            token_buf.clear()
+
+    if etype == "agent_event":
+        inner = event.get("event", {})
+        itype = inner.get("type", "")
+
+        if itype == "content_start":
+            token = inner.get("text", "")
+            token_buf.append(token)
+            # Flush on sentence boundaries to keep lines reasonably short
+            joined = "".join(token_buf)
+            if len(joined) > 120 or joined.endswith(("\n", ". ", "! ", "? ")):
+                flush_tokens()
+
+        elif itype in ("content_block_stop", "message_stop"):
+            flush_tokens()
+
+        elif itype == "tool_use":
+            flush_tokens()
+            name   = inner.get("name", inner.get("tool", "?"))
+            params = inner.get("input", inner.get("params", {}))
+            # Show the most useful param without dumping the whole dict
+            hint = ""
+            for key in ("path", "command", "query", "url", "description", "content"):
+                if key in params:
+                    val = str(params[key])[:80]
+                    hint = f" {key}={val!r}"
+                    break
+            clf.write(f"\n  ▶ {ts} {name}{hint}\n")
+            clf.flush()
+
+        elif itype == "tool_result":
+            flush_tokens()
+            content = inner.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+            summary = str(content).strip().replace("\n", " ")[:120]
+            if summary:
+                clf.write(f"  ◀ {summary}\n")
+                clf.flush()
+
+        elif itype == "message_start":
+            flush_tokens()
+            clf.write(f"\n  ── {ts} message ──\n")
+            clf.flush()
+
+    elif etype in ("system", "info"):
+        flush_tokens()
+        text = event.get("message", event.get("text", str(event)))[:200]
+        clf.write(f"[{ts}] {text}\n")
+        clf.flush()
+
+    elif etype == "error":
+        flush_tokens()
+        text = event.get("message", event.get("error", str(event)))[:200]
+        clf.write(f"[{ts}] ERROR: {text}\n")
+        clf.flush()
+
+    # All other event types (metadata, ping, etc.) are silently dropped
+
 
 def run_cline(
     prompt: str,
@@ -712,16 +1178,26 @@ def run_cline(
     dc: Optional["DiscordClient"],
     approvals_channel_id: Optional[str],
     attempt_number: int = 1,
+    model_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     Run Cline CLI with retry logic for llama.cpp failures.
     Returns (success: bool, output_text: str).
-    Notifies #forge-approvals (not #forge-reports) on retry — approvals channel
-    is owner-only and the right place for operational alerts.
+
+    model_id is passed via -M to select the llama-swap variant:
+      Qwen3.6-35B-A3B:planning — used for STEP 1 (plan mode, all tasks)
+      Qwen3.6-35B-A3B:coding   — used for STEP 2-4 (act mode, all tasks)
+    llama-swap applies the correct sampling params server-side via setParamsByID.
+
+    Cline output is parsed and written to CLINE_LOG_FILE in human-readable form.
+    Monitor live with: tail -f forge/cline.log
     """
-    cmd = build_cline_cmd(prompt, plan_mode, cwd)
+    cmd = build_cline_cmd(prompt, plan_mode, cwd, model_id=model_id)
     mode_label = "PLAN" if plan_mode else "ACT"
-    log(f"[{task_id}] Running Cline {mode_label} mode (timeout {CLINE_TIMEOUT}s, attempt {attempt_number})")
+    model_label = model_id or "default"
+    log(f"[{task_id}] Running Cline {mode_label} mode — model: {model_label} "
+        f"(timeout {CLINE_TIMEOUT}s, attempt {attempt_number})")
+    log(f"[{task_id}] Cline output → {CLINE_LOG_FILE}")
 
     for attempt in range(1, CLINE_RETRIES + 1):
         if attempt > 1:
@@ -734,39 +1210,66 @@ def run_cline(
             time.sleep(delay)
 
         text_output: list[str] = []
+        token_buf:   list[str] = []
+
+        # Session header
+        with open(CLINE_LOG_FILE, "a") as clf:
+            clf.write(
+                f"\n{'─'*60}\n"
+                f"[{_ts()}] [{task_id}] Cline {mode_label} — attempt {attempt}/{CLINE_RETRIES}\n"
+                f"{'─'*60}\n"
+            )
 
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
 
-            for line in proc.stdout:
-                line = line.rstrip()
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "agent_event" and event.get("event", {}).get("text"):
-                        text_output.append(event["event"]["text"])
-                    elif event.get("type") == "text":
-                        text_output.append(event.get("text", ""))
-                except json.JSONDecodeError:
-                    text_output.append(line)
+            with open(CLINE_LOG_FILE, "a") as clf:
+                for line in proc.stdout:
+                    raw = line.rstrip()
+                    try:
+                        event = json.loads(raw)
+                        # Write human-readable form to cline.log
+                        _write_cline_log(clf, event, token_buf)
+                        # Extract text for internal use (Discord reports etc.)
+                        if event.get("type") == "agent_event":
+                            inner = event.get("event", {})
+                            if inner.get("type") == "content_start":
+                                text_output.append(inner.get("text", ""))
+                        elif event.get("type") == "text":
+                            text_output.append(event.get("text", ""))
+                    except json.JSONDecodeError:
+                        # Plain text — write as-is
+                        if raw:
+                            clf.write(f"{raw}\n")
+                            clf.flush()
+                            text_output.append(raw)
 
-            _, stderr = proc.communicate(timeout=30)
+                # Flush any remaining tokens at end of stream
+                if token_buf:
+                    clf.write("  " + "".join(token_buf).strip() + "\n")
+                    clf.flush()
+                    token_buf.clear()
+
+            proc.wait(timeout=30)
             exit_code = proc.returncode
 
         except subprocess.TimeoutExpired:
             proc.kill()
             log_err(f"[{task_id}] Cline {mode_label} timed out after {CLINE_TIMEOUT}s")
             exit_code = -1
-            stderr = "process timed out"
         except FileNotFoundError:
             log_err(f"Cline binary not found: {CLINE_BIN}")
             log_err("Install with: npm install -g cline")
             sys.exit(1)
+
+        with open(CLINE_LOG_FILE, "a") as clf:
+            clf.write(f"[{_ts()}] [{task_id}] Cline {mode_label} exited: {exit_code}\n")
 
         full_output = "\n".join(text_output)
 
@@ -775,8 +1278,6 @@ def run_cline(
             return True, full_output
 
         log_err(f"[{task_id}] Cline {mode_label} exited with code {exit_code}")
-        if stderr:
-            log_err(f"[{task_id}] stderr: {stderr[-500:]}")
 
     return False, full_output
 
@@ -860,6 +1361,15 @@ def execute_task(
         state["impl_report_message_id"] = None
         save_state(state)
 
+        # Notify reports channel that a new task is starting
+        if dc and reports_channel_id and not dry_run:
+            prereqs = ", ".join(task.get("prereqs", [])) or "none"
+            dc.send_message(
+                reports_channel_id,
+                f"⚙️ **Task `{tid}` STARTED** — {task['description']}\n"
+                f"Phase {task.get('phase', '?')} · Prereqs: `{prereqs}`"
+            )
+
     # ── Phase 1: Plan ────────────────────────────────────────────────────────
     plan_attempt = 1
     feedback = ""
@@ -876,7 +1386,7 @@ def execute_task(
             prompt += f"\n\nREVISION FEEDBACK from project owner:\n{feedback}\n\nRevise your plan accordingly."
 
         if dry_run:
-            log(f"[{tid}] [DRY RUN] Would run Cline PLAN mode")
+            log(f"[{tid}] [DRY RUN] Would run Cline PLAN mode ({MODEL_PLANNING})")
             plan_text = f"[DRY RUN] Plan for {tid}"
         else:
             success, output = run_cline(
@@ -884,6 +1394,7 @@ def execute_task(
                 task_id=tid, dc=dc,
                 approvals_channel_id=approvals_channel_id,
                 attempt_number=plan_attempt,
+                model_id=MODEL_PLANNING,
             )
             if not success:
                 msg = f"❌ `{tid}` Cline PLAN failed after {CLINE_RETRIES} attempts. Stopping."
@@ -905,23 +1416,30 @@ def execute_task(
         state["current_plan"] = plan_text
         save_state(state)
 
-        # ── Post plan report to #forge-reports (broadcast, no reactions) ────
+        # Read full report once — sent as attachment to #forge-reports
+        full_report = read_report_file(tid)
+
+        # ── Post plan report to #forge-reports as .md attachment ────────────
         if dc and reports_channel_id and not dry_run:
-            full_report = read_report_file(tid)
-            broadcast_text = format_report_broadcast(task, "PLAN", full_report or plan_text)
-            report_msg_id = dc.send_message(reports_channel_id, broadcast_text)
+            caption = format_report_caption(task, "PLAN")
+            filename = f"{tid}-plan.md"
+            report_msg_id = dc.send_file(
+                reports_channel_id, caption, filename,
+                full_report or plan_text
+            )
             if report_msg_id:
                 state["plan_report_message_id"] = report_msg_id
                 save_state(state)
-                log(f"[{tid}] Plan report posted to #forge-reports (msg {report_msg_id})")
+                log(f"[{tid}] Plan report attached to #forge-reports (msg {report_msg_id})")
 
         # ── Post approval request to #forge-approvals (polled for reactions) ─
         if dc and approvals_channel_id:
-            approval_text = format_plan_approval_request(task, plan_text, plan_attempt, feedback)
+            approval_text = format_plan_approval_request(task, plan_attempt, feedback)
             approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
             if approval_msg_id:
                 dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)  # ✅
-                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)  # ❌
+                time.sleep(0.75)
+                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)   # ❌
                 state["plan_approval_message_id"] = approval_msg_id
                 save_state(state)
                 log(f"[{tid}] Plan approval request posted to #forge-approvals (msg {approval_msg_id})")
@@ -930,7 +1448,11 @@ def execute_task(
                     log(f"[{tid}] [DRY RUN] Skipping approval wait")
                     approved, feedback = True, ""
                 else:
-                    approved, feedback = wait_for_approval(dc, approvals_channel_id, approval_msg_id)
+                    approved, feedback = wait_for_approval(
+                        dc, approvals_channel_id, approval_msg_id,
+                        reports_channel_id=reports_channel_id,
+                        report_message_id=state.get("plan_report_message_id"),
+                    )
             else:
                 log_warn(f"[{tid}] Failed to post to #forge-approvals — auto-approving plan")
                 approved, feedback = True, ""
@@ -942,6 +1464,18 @@ def execute_task(
             state["plan_approved"] = True
             save_state(state)
             log(f"[{tid}] ✅ Plan approved")
+
+            # ── Snapshot approved plan before act phase ──────────────────────
+            # Cline will overwrite .cline/reports/{tid}.md during STEP 4.
+            # Save the full approved plan report now so the implementation PDF
+            # can include it as a permanent record of decisions made.
+            snapshot_path = REPO_ROOT / ".cline" / "reports" / f"{tid}-plan-snapshot.md"
+            try:
+                snapshot_content = read_report_file(tid) or plan_text
+                snapshot_path.write_text(snapshot_content)
+                log(f"[{tid}] Plan snapshot saved to {snapshot_path.name}")
+            except Exception as e:
+                log_warn(f"[{tid}] Could not save plan snapshot: {e}")
             break
         else:
             log(f"[{tid}] ❌ Plan rejected — feedback: {feedback!r}")
@@ -960,10 +1494,10 @@ def execute_task(
                 return False
 
     # ── Phase 2: Act ─────────────────────────────────────────────────────────
-    log(f"[{tid}] ⚙️  Act phase (implement + test + commit)")
+    log(f"[{tid}] ⚙️  Act phase — model: {MODEL_CODING}")
 
     if dry_run:
-        log(f"[{tid}] [DRY RUN] Would run Cline ACT mode")
+        log(f"[{tid}] [DRY RUN] Would run Cline ACT mode ({MODEL_CODING})")
         act_success = True
     else:
         act_prompt = build_act_prompt(task, state["current_plan"])
@@ -971,6 +1505,7 @@ def execute_task(
             act_prompt, plan_mode=False, cwd=REPO_ROOT,
             task_id=tid, dc=dc,
             approvals_channel_id=approvals_channel_id,
+            model_id=MODEL_CODING,
         )
 
     if not act_success:
@@ -983,20 +1518,59 @@ def execute_task(
         save_state(state)
         return False
 
+    # ── Forge-owned root repo commit ──────────────────────────────────────────
+    # Cline commits and pushes the submodules it worked on (AnvilML, BloomeryUI).
+    # The Forge always commits the root repo itself to ensure:
+    #   - submodule pointers are updated to the latest submodule commits
+    #   - .cline/reports/{TASK-ID}.md is committed
+    #   - .cline/state/CURRENT_TASK.md is committed
+    # This runs unconditionally after every successful act phase.
+    root_commit_hash = _forge_commit_root(tid, task["description"])
+    if root_commit_hash:
+        log(f"[{tid}] Root repo committed and pushed: {root_commit_hash}")
+    else:
+        log_warn(f"[{tid}] Root repo commit failed or had nothing to commit — check manually")
+        if dc and approvals_channel_id:
+            dc.send_message(
+                approvals_channel_id,
+                f"⚠️ `{tid}` Root repo commit/push failed. "
+                f"Submodule refs and reports may not be on origin. Check manually."
+            )
+
     # ── Collect git commit info ───────────────────────────────────────────────
     commit_info = collect_commit_info(task)
 
-    # Read the finalized report file (Cline fills in Implementation + Test Results in STEP 4)
-    report_text = read_report_file(tid)
+    # Read the finalized implementation report (Cline writes this in STEP 4)
+    impl_report_text = read_report_file(tid)
 
-    # ── Post implementation report to #forge-reports (broadcast, no reactions) ─
+    # Merge the saved plan snapshot into the implementation report so the PDF
+    # is a complete record: approved plan decisions + implementation + test results.
+    snapshot_path = REPO_ROOT / ".cline" / "reports" / f"{tid}-plan-snapshot.md"
+    if snapshot_path.exists():
+        plan_snapshot = snapshot_path.read_text()
+        full_report_text = (
+            f"{impl_report_text or ''}\n\n"
+            f"---\n\n"
+            f"# Approved Plan (recorded at approval)\n\n"
+            f"{plan_snapshot}"
+        )
+        log(f"[{tid}] Merged plan snapshot into implementation report")
+    else:
+        log_warn(f"[{tid}] Plan snapshot not found — implementation report will not include plan")
+        full_report_text = impl_report_text or f"# {tid}\nReport not found."
+
+    # ── Post implementation report to #forge-reports as PDF attachment ────────
     if dc and reports_channel_id and not dry_run:
-        broadcast_text = format_implementation_report_broadcast(task, commit_info, report_text)
-        impl_msg_id = dc.send_message(reports_channel_id, broadcast_text)
+        caption = format_implementation_caption(task, commit_info)
+        filename = f"{tid}-implementation.md"
+        impl_msg_id = dc.send_file(
+            reports_channel_id, caption, filename,
+            full_report_text
+        )
         if impl_msg_id:
             state["impl_report_message_id"] = impl_msg_id
             save_state(state)
-            log(f"[{tid}] Implementation report posted to #forge-reports (msg {impl_msg_id})")
+            log(f"[{tid}] Implementation report attached to #forge-reports (msg {impl_msg_id})")
 
     # ── Post push approval request to #forge-approvals (polled) ──────────────
     if dc and approvals_channel_id:
@@ -1004,6 +1578,7 @@ def execute_task(
         approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
         if approval_msg_id:
             dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
+            time.sleep(0.75)
             dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)
             state["push_approval_message_id"] = approval_msg_id
             save_state(state)
@@ -1013,7 +1588,11 @@ def execute_task(
                 log(f"[{tid}] [DRY RUN] Skipping push approval wait")
                 push_approved, push_feedback = True, ""
             else:
-                push_approved, push_feedback = wait_for_approval(dc, approvals_channel_id, approval_msg_id)
+                push_approved, push_feedback = wait_for_approval(
+                    dc, approvals_channel_id, approval_msg_id,
+                    reports_channel_id=reports_channel_id,
+                    report_message_id=state.get("impl_report_message_id"),
+                )
         else:
             log_warn(f"[{tid}] Failed to post push approval to #forge-approvals — auto-approving")
             push_approved, push_feedback = True, ""
@@ -1045,6 +1624,14 @@ def execute_task(
     state["plan_report_message_id"] = None
     state["impl_report_message_id"] = None
     save_state(state)
+
+    # Purge cline.log now that the task is complete — keeps disk usage low.
+    # forge.log is retained (it's the permanent orchestration record).
+    try:
+        CLINE_LOG_FILE.write_text("")
+        log(f"[{tid}] cline.log purged")
+    except Exception as e:
+        log_warn(f"[{tid}] Could not purge cline.log: {e}")
 
     if dc and reports_channel_id:
         dc.send_message(

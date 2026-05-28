@@ -11,8 +11,10 @@ echo ""
 
 # ── Python deps ──────────────────────────────────────────────────────────────
 echo "Installing Python dependencies..."
-pip install requests --quiet
+pip install requests weasyprint markdown --quiet
 echo "  ✓ requests"
+echo "  ✓ weasyprint (PDF generation)"
+echo "  ✓ markdown (markdown → HTML conversion)"
 
 # ── Cline CLI check ───────────────────────────────────────────────────────────
 echo ""
@@ -134,6 +136,10 @@ echo "  cline config set plan-mode-api-provider openai-compatible"
 echo "  cline config set plan-mode-openai-base-url http://localhost:11434/v1"
 echo "  cline config set plan-mode-openai-api-key dummy"
 echo "  cline config set plan-mode-openai-model-id qwen3"
+echo ""
+echo "  # Set context window to full native context for Qwen3-35B-A3B (262,144 tokens)"
+echo "  # Requires llama.cpp launched with: --ctx-size 262144"
+echo "  cline config set api-model-info.contextWindow 262144"
 echo ""
 echo "  # Disable auto-approve in Cline config (Forge manages approval externally)"
 echo "  cline config set auto-approval-settings.enabled false"
