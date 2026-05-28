@@ -8,18 +8,19 @@
     "P1-A6",
     "P1-A8",
     "P1-A7",
-    "P1-B1"
+    "P1-B1",
+    "P1-A9"
   ],
-  "in_progress": "P1-A9",
-  "plan_approved": true,
-  "current_plan": "# P1-A9 \u2014 anvilml-hardware: mock implementation\n\n**Status:** STEP 1-PLAN COMPLETE (waiting for approval)\n**Prerequisites:** P1-A6 (detector trait + CPU impl) \u2014 COMPLETE\n\n---\n\n## PLAN\n\n### Objective\nImplement `MockHardwareDetector` behind the `mock-hardware` feature flag.\nReads three environment variables and returns a single fake `GpuDevice` with\nconfigured values. Used by all CI tests to avoid requiring real GPU hardware.\n\n### Files to Create\n\n**1. `crates/anvilml-hardware/src/mock.rs`**\n\nContents:\n- `MockHardwareDetector` \u2014 unit struct implementing `DeviceDetector` trait\n- Reads env vars on each `detect()` call (stateless):\n  - `ANVILML_MOCK_DEVICE_TYPE` \u2192 default `\"cpu\"`, maps to `DeviceType` enum\n  - `ANVILML_MOCK_VRAM_MIB` \u2192 default `8192u64`\n  - `ANVILML_MOCK_GFX_ARCH` \u2192 default `\"gfx1201\"`\n- Returns `Ok(Some(HardwareInfo { host, devices }))` with one fake device\n- Device type is determined by `ANVILML_MOCK_DEVICE_TYPE`\n- `gfx_arch` field: `Some(value)` if device_type != Cpu, else `None`\n- VRAM fields: total = env var value, free = total, used = 0\n- InferenceCaps: all `false` for CPU, reasonable defaults for GPU types\n- HostInfo: placeholder data (\"Mock CPU\", 1 core, etc.)\n- Unknown device type strings fall back to `DeviceType::Cpu`\n- `#[cfg(test)] mod mock_tests` with 3 tests:\n  - Default config \u2192 CPU device, 8192 MiB VRAM\n  - `ANVILML_MOCK_DEVICE_TYPE=rocm` \u2192 Rocm device, gfx1201\n  - `ANVILML_MOCK_VRAM_MIB=16384` \u2192 configured VRAM size\n\n### Files to Modify\n\n**2. `crates/anvilml-hardware/Cargo.toml`** \u2014 Add features section:\n```toml\n[features]\ndefault = []\nmock-hardware = []\n```\n\n**3. `crates/anvilml-hardware/src/lib.rs`** \u2014 Append at end:\n```rust\n#[cfg(feature = \"mock-hardware\")]\npub mod mock;\n#[cfg(feature = \"mock-hardware\")]\npub use mock::MockHardwareDetector;\n```\n\n### Design Decisions\n\n1. **Stateless detector** \u2014 reads env vars fresh on each `detect()` call, matching\n   the pattern of real detectors that query system state at call time.\n2. **Graceful fallback** \u2014 unknown device type strings \u2192 `DeviceType::Cpu`,\n   missing env vars \u2192 documented defaults.\n3. **gfx_arch conditional** \u2014 only set for GPU types (Rocm/Cuda/Ipx), always\n   `None` for CPU (matching real CPU detector behavior).\n4. **Test isolation** \u2014 tests use `std::env::remove_var` / `set_var` to control\n   environment; since Rust test runner doesn't guarantee order, each test\n   explicitly sets AND cleans up its env vars.\n5. **No new dependencies** \u2014 the mock feature requires no additional crates;\n   only uses `std::env`, existing `anvilml-core` types, and `async-trait`.\n\n### Acceptance Criteria (for STEP 2)\n\n- [ ] `cargo test -p anvilml-hardware --features mock-hardware` exits 0\n- [ ] `cargo test -p anvilml-hardware` (no feature) exits 0 \u2014 mock code not compiled\n- [ ] `cargo clippy -p anvilml-hardware -- -D warnings` passes both ways\n",
+  "in_progress": "P1-B2",
+  "plan_approved": false,
+  "current_plan": null,
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-05-28T08:09:08Z",
+  "last_updated": "2026-05-28T08:21:17Z",
   "plan_message_id": null,
   "report_message_id": null,
-  "plan_approval_message_id": "1509467587841490984",
+  "plan_approval_message_id": null,
   "push_approval_message_id": null,
-  "plan_report_message_id": "1509467586100854795",
+  "plan_report_message_id": null,
   "impl_report_message_id": null
 }

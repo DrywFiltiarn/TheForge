@@ -61,8 +61,9 @@ FORGE_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = Path("/home/dryw/sandbox")  # SindriStudio root
 STATE_FILE = FORGE_DIR / "state.json"
 TASKS_FILE = FORGE_DIR / "tasks.json"
-LOG_FILE       = FORGE_DIR / "forge.log"
-CLINE_LOG_FILE = FORGE_DIR / "cline.log"
+LOG_FILE         = FORGE_DIR / "forge.log"
+CLINE_LOG_FILE   = FORGE_DIR / "cline.log"
+CONTEXT_LOG_FILE = FORGE_DIR / "context.log"
 
 # Discord — bot token and guild ID still come from environment (secrets)
 DISCORD_BOT_TOKEN = os.environ.get("FORGE_DISCORD_TOKEN", "")
@@ -690,7 +691,53 @@ def revert_task_repos(task: dict) -> bool:
 
     return all_ok
 
-def collect_commit_info(task: dict) -> dict:
+def _forge_push_repos(task: dict) -> bool:
+    """
+    Push all submodule repos touched by this task to origin/develop.
+    Called by Forge after push approval — Cline only commits locally in STEP 4.
+    Returns True if all pushes succeeded.
+    """
+    repos = task.get("repos", [])
+    repo_paths = {
+        "anvilml":    REPO_ROOT / "backend",
+        "bloomeryui": REPO_ROOT / "frontend",
+    }
+
+    # Filter to repos that actually have unpushed commits
+    to_push = []
+    for repo_key in repos:
+        if repo_key == "root":
+            continue  # root is handled by _forge_commit_root
+        path = repo_paths.get(repo_key)
+        if not path or not path.exists():
+            continue
+        if has_unpushed_commits(path):
+            to_push.append((repo_key, path))
+        else:
+            log(f"[git] {repo_key}: nothing to push")
+
+    if not to_push:
+        log("[git] No submodule repos have unpushed commits")
+        return True
+
+    all_ok = True
+    for repo_key, path in to_push:
+        log(f"[git] Pushing {repo_key} to origin/develop...")
+        try:
+            result = subprocess.run(
+                ["git", "push", "origin", "develop"],
+                cwd=path, capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                log(f"[git] {repo_key}: pushed successfully")
+            else:
+                log_err(f"[git] {repo_key}: push failed: {result.stderr.strip()}")
+                all_ok = False
+        except Exception as e:
+            log_err(f"[git] {repo_key}: push exception: {e}")
+            all_ok = False
+
+    return all_ok
     """Collect commit info from all repos the task touches."""
     info = {}
     repos = task.get("repos", ["root"])
@@ -1083,9 +1130,56 @@ def build_cline_cmd(prompt: str, plan_mode: bool, cwd: Path,
     cmd.append(prompt)
     return cmd
 
-def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
+def _update_context_display(task_id: str, mode: str, pct: float,
+                             tokens_used: int, tokens_total: int) -> None:
+    """
+    Overwrite context.log with the current context usage status.
+    This file is tailed in the fourth tmux pane for live monitoring.
+    Color coding mirrors the .clinerules threshold: green <50%, yellow 50-65%, red >=65%.
+    """
+    if pct >= 65:
+        bar_char = "█"
+        status   = "⚠  APPROACHING LIMIT"
+        color    = "\033[91m"  # red
+    elif pct >= 50:
+        bar_char = "▓"
+        status   = "◉  MONITOR"
+        color    = "\033[93m"  # yellow
+    else:
+        bar_char = "░"
+        status   = "●  OK"
+        color    = "\033[92m"  # green
+
+    reset = "\033[0m"
+    bar_width = 40
+    filled = int(bar_width * pct / 100)
+    bar = bar_char * filled + "·" * (bar_width - filled)
+
+    content = (
+        f"{color}{'─' * 50}{reset}\n"
+        f"  Task    : {task_id}  [{mode}]\n"
+        f"  Updated : {_ts()}\n"
+        f"{'─' * 50}\n"
+        f"\n"
+        f"  {color}Context Usage:  {pct:.1f}%  {status}{reset}\n"
+        f"  [{color}{bar}{reset}]\n"
+        f"  {tokens_used:,} / {tokens_total:,} tokens\n"
+        f"\n"
+        f"  Threshold : {color}65% = {int(tokens_total * 0.65):,} tokens{reset}\n"
+        f"{'─' * 50}\n"
+    )
+    try:
+        CONTEXT_LOG_FILE.write_text(content)
+    except Exception:
+        pass  # non-critical
+
+
+def _write_cline_log(clf, event: dict, token_buf: list[str],
+                     task_id: str = "", mode: str = "") -> None:
     """
     Write a human-readable line to cline.log for a single Cline NDJSON event.
+    Also extracts context usage percentage from environment_details events
+    and writes it to context.log for live monitoring in the tmux context pane.
 
     Token accumulation: content_start events carry individual tokens (~one word).
     We buffer them and flush as a complete paragraph when a non-token event
@@ -1093,12 +1187,13 @@ def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
     rather than one JSON blob per word.
 
     Event type mapping:
-      agent_event / content_start  → accumulate tokens, flush on paragraph break
-      agent_event / content_block_stop → flush token buffer as a line
-      tool_use                     → "  ▶ tool_name(params)"
-      tool_result                  → "  ◀ result summary"
-      system / info / error        → prefixed plain text
-      anything else                → skip (noise)
+      agent_event / content_start       → accumulate tokens, flush on paragraph break
+      agent_event / content_block_stop  → flush token buffer as a line
+      agent_event / tool_use            → "  ▶ tool_name(params)"
+      agent_event / tool_result         → "  ◀ result summary"
+      environment_details               → extract context %, update context.log
+      system / info / error             → prefixed plain text
+      anything else                     → skip (noise)
     """
     etype = event.get("type", "")
     ts    = event.get("ts", "")[-8:-1] if event.get("ts") else ""  # HH:MM:SS
@@ -1111,14 +1206,45 @@ def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
                 clf.flush()
             token_buf.clear()
 
+    # ── Context usage extraction ──────────────────────────────────────────────
+    # Cline emits environment_details with a contextUsagePercent field (0-100).
+    # It may also appear nested inside an agent_event wrapper.
+    def _try_extract_context(payload: dict) -> None:
+        pct = payload.get("contextUsagePercent") or payload.get("context_usage_percent")
+        if pct is None:
+            # Try inside a details sub-object
+            details = payload.get("details", payload.get("environment_details", {}))
+            if isinstance(details, dict):
+                pct = details.get("contextUsagePercent") or details.get("context_usage_percent")
+        if pct is not None:
+            try:
+                pct_f = float(pct)
+                # Try to get absolute counts if available
+                used  = int(payload.get("contextTokensUsed",  pct_f / 100 * 262144))
+                total = int(payload.get("contextWindowTokens", 262144))
+                _update_context_display(task_id, mode, pct_f, used, total)
+                # Also write a one-liner to cline.log at key thresholds
+                if pct_f >= 65:
+                    clf.write(f"  ⚠  [{ts}] CONTEXT {pct_f:.1f}% — APPROACHING LIMIT\n")
+                    clf.flush()
+                elif pct_f >= 50:
+                    clf.write(f"  ◉  [{ts}] Context {pct_f:.1f}%\n")
+                    clf.flush()
+            except (ValueError, TypeError):
+                pass
+
+    if etype == "environment_details":
+        _try_extract_context(event)
+        return  # don't write environment_details verbatim to cline.log
+
     if etype == "agent_event":
         inner = event.get("event", {})
+        _try_extract_context(inner)
         itype = inner.get("type", "")
 
         if itype == "content_start":
             token = inner.get("text", "")
             token_buf.append(token)
-            # Flush on sentence boundaries to keep lines reasonably short
             joined = "".join(token_buf)
             if len(joined) > 120 or joined.endswith(("\n", ". ", "! ", "? ")):
                 flush_tokens()
@@ -1130,7 +1256,6 @@ def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
             flush_tokens()
             name   = inner.get("name", inner.get("tool", "?"))
             params = inner.get("input", inner.get("params", {}))
-            # Show the most useful param without dumping the whole dict
             hint = ""
             for key in ("path", "command", "query", "url", "description", "content"):
                 if key in params:
@@ -1166,8 +1291,6 @@ def _write_cline_log(clf, event: dict, token_buf: list[str]) -> None:
         text = event.get("message", event.get("error", str(event)))[:200]
         clf.write(f"[{ts}] ERROR: {text}\n")
         clf.flush()
-
-    # All other event types (metadata, ping, etc.) are silently dropped
 
 
 def run_cline(
@@ -1212,13 +1335,14 @@ def run_cline(
         text_output: list[str] = []
         token_buf:   list[str] = []
 
-        # Session header
+        # Session header — also reset context.log for the new session
         with open(CLINE_LOG_FILE, "a") as clf:
             clf.write(
                 f"\n{'─'*60}\n"
                 f"[{_ts()}] [{task_id}] Cline {mode_label} — attempt {attempt}/{CLINE_RETRIES}\n"
                 f"{'─'*60}\n"
             )
+        _update_context_display(task_id, mode_label, 0.0, 0, 262144)
 
         try:
             proc = subprocess.Popen(
@@ -1235,7 +1359,8 @@ def run_cline(
                     try:
                         event = json.loads(raw)
                         # Write human-readable form to cline.log
-                        _write_cline_log(clf, event, token_buf)
+                        _write_cline_log(clf, event, token_buf,
+                                         task_id=task_id, mode=mode_label)
                         # Extract text for internal use (Discord reports etc.)
                         if event.get("type") == "agent_event":
                             inner = event.get("event", {})
@@ -1518,26 +1643,8 @@ def execute_task(
         save_state(state)
         return False
 
-    # ── Forge-owned root repo commit ──────────────────────────────────────────
-    # Cline commits and pushes the submodules it worked on (AnvilML, BloomeryUI).
-    # The Forge always commits the root repo itself to ensure:
-    #   - submodule pointers are updated to the latest submodule commits
-    #   - .cline/reports/{TASK-ID}.md is committed
-    #   - .cline/state/CURRENT_TASK.md is committed
-    # This runs unconditionally after every successful act phase.
-    root_commit_hash = _forge_commit_root(tid, task["description"])
-    if root_commit_hash:
-        log(f"[{tid}] Root repo committed and pushed: {root_commit_hash}")
-    else:
-        log_warn(f"[{tid}] Root repo commit failed or had nothing to commit — check manually")
-        if dc and approvals_channel_id:
-            dc.send_message(
-                approvals_channel_id,
-                f"⚠️ `{tid}` Root repo commit/push failed. "
-                f"Submodule refs and reports may not be on origin. Check manually."
-            )
-
     # ── Collect git commit info ───────────────────────────────────────────────
+    # Cline has committed locally but not pushed — collect what's staged locally.
     commit_info = collect_commit_info(task)
 
     # Read the finalized implementation report (Cline writes this in STEP 4)
@@ -1601,9 +1708,9 @@ def execute_task(
         push_approved, push_feedback = True, ""
 
     if not push_approved:
-        # Cline already committed and pushed in STEP 4 — mark for owner review
+        # Commits are local only — safe to mark needs-review without any push
         msg = (f"🔍 `{tid}` Push rejected (feedback: {push_feedback!r}). "
-               f"Commits are on origin/develop. Task marked needs-review.")
+               f"Commits are local only. Task marked needs-review.")
         log_warn(msg)
         if dc and approvals_channel_id:
             dc.send_message(approvals_channel_id, msg)
@@ -1612,7 +1719,34 @@ def execute_task(
         save_state(state)
         return False
 
-    log(f"[{tid}] ✅ Push approved")
+    log(f"[{tid}] ✅ Push approved — pushing submodules then root")
+
+    # ── Push submodule repos (Cline committed locally, Forge pushes) ──────────
+    push_ok = _forge_push_repos(task)
+    if not push_ok:
+        msg = (f"⚠️ `{tid}` Submodule push failed. "
+               f"Commits are local. Check git status manually, then use "
+               f"`--reset-task` or push manually and `--complete`.")
+        log_err(msg)
+        if dc and approvals_channel_id:
+            dc.send_message(approvals_channel_id, msg)
+        state["needs_review"].append(tid)
+        state["in_progress"] = None
+        save_state(state)
+        return False
+
+    # ── Commit and push root repo (submodule pointers + reports + state) ─────
+    root_commit_hash = _forge_commit_root(tid, task["description"])
+    if root_commit_hash:
+        log(f"[{tid}] Root repo committed and pushed: {root_commit_hash}")
+    else:
+        log_warn(f"[{tid}] Root repo commit failed or had nothing to commit — check manually")
+        if dc and approvals_channel_id:
+            dc.send_message(
+                approvals_channel_id,
+                f"⚠️ `{tid}` Root repo commit/push failed. "
+                f"Submodule refs and reports may not be on origin. Check manually."
+            )
 
     # ── Mark complete ────────────────────────────────────────────────────────
     state["completed"].append(tid)
@@ -1625,13 +1759,13 @@ def execute_task(
     state["impl_report_message_id"] = None
     save_state(state)
 
-    # Purge cline.log now that the task is complete — keeps disk usage low.
-    # forge.log is retained (it's the permanent orchestration record).
-    try:
-        CLINE_LOG_FILE.write_text("")
-        log(f"[{tid}] cline.log purged")
-    except Exception as e:
-        log_warn(f"[{tid}] Could not purge cline.log: {e}")
+    # Purge cline.log and context.log now that the task is complete.
+    # forge.log is retained (permanent orchestration record).
+    for log_file in (CLINE_LOG_FILE, CONTEXT_LOG_FILE):
+        try:
+            log_file.write_text("")
+        except Exception as e:
+            log_warn(f"[{tid}] Could not purge {log_file.name}: {e}")
 
     if dc and reports_channel_id:
         dc.send_message(
