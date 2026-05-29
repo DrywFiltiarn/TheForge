@@ -1,0 +1,17 @@
+{
+  "sindristudio": {
+    "path": "/home/dryw/SindriStudio",
+    "branch": "main",
+    "github_url": "https://github.com/DrywFiltiarn/SindriStudio.git"
+  },
+  "anvilml": {
+    "path": "/home/dryw/AnvilML",
+    "branch": "main",
+    "github_url": "https://github.com/DrywFiltiarn/AnvilML.git"
+  },
+  "bloomeryui": {
+    "path": "/home/dryw/BloomeryUI",
+    "branch": "main",
+    "github_url": "https://github.com/DrywFiltiarn/BloomeryUI.git"
+  }
+}

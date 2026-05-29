@@ -16,11 +16,29 @@ Discord channel roles:
                      cross-reference with the matching report in #forge-reports.
 
 Usage:
-    python forge.py                    # run from next unblocked task
-    python forge.py --task P1-A3       # force-start a specific task
-    python forge.py --dry-run          # show what would run, no execution
-    python forge.py --list             # show task DAG status and exit
-    python forge.py --reset-task P1-A3 # reset a task to unstarted
+    python forge.py --repo anvilml                         # run all phases for anvilml
+    python forge.py --repo anvilml --task P1-A1            # run ONE task then exit (full cycle, full gates)
+    python forge.py --repo anvilml --phase 2               # load phases 1+2 only, run from next unblocked task
+    python forge.py --repo anvilml --phase 2 --task P2-B1  # run ONE specific task from phase 2 then exit
+    python forge.py --repo anvilml --dry-run               # show what would run, no execution
+    python forge.py --repo anvilml --list                  # show task DAG status and exit
+    python forge.py --repo anvilml --list --phase 2        # show DAG for phases 1+2 only
+    python forge.py --repo anvilml --reset-task P1-A3      # reset a task to unstarted (no git)
+    python forge.py --repo anvilml --reset-task-git P1-A3  # reset task AND hard-reset repo to origin/<branch>
+
+repos.json format (next to forge.py):
+    {
+      "anvilml": {
+        "path": "/home/user/projects/AnvilML",
+        "branch": "main",
+        "github_url": "https://github.com/yourorg/AnvilML"
+      },
+      "bloomeryui": {
+        "path": "/home/user/projects/BloomeryUI",
+        "branch": "main",
+        "github_url": "https://github.com/yourorg/BloomeryUI"
+      }
+    }
 """
 
 import argparse
@@ -57,13 +75,270 @@ def _encode_emoji(emoji: str) -> str:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-FORGE_DIR = Path(__file__).parent.resolve()
-REPO_ROOT = Path("/home/dryw/sandbox")  # SindriStudio root
-STATE_FILE = FORGE_DIR / "state.json"
-TASKS_FILE = FORGE_DIR / "tasks.json"
+FORGE_DIR        = Path(__file__).parent.resolve()   # wherever forge.py lives
+REPOS_FILE       = FORGE_DIR / "repos.json"
 LOG_FILE         = FORGE_DIR / "forge.log"
 CLINE_LOG_FILE   = FORGE_DIR / "cline.log"
 CONTEXT_LOG_FILE = FORGE_DIR / "context.log"
+
+# Resolved in main() after --repo is validated.
+# Points to <repo>/.forge/state.json — scoped to the active repository.
+STATE_FILE: Path = Path()  # placeholder; never used before main() sets it
+
+# ─── Repository registry ──────────────────────────────────────────────────────
+# repos.json maps logical project names to their configuration.
+# Each entry must have:
+#   path       — absolute filesystem path to the repository
+#   branch     — working branch (e.g. "main", "develop")
+#   github_url — GitHub remote URL (informational; not used by The Forge yet)
+#
+# Example repos.json:
+# {
+#   "anvilml": {
+#     "path": "/home/user/projects/AnvilML",
+#     "branch": "main",
+#     "github_url": "https://github.com/yourorg/AnvilML"
+#   }
+# }
+
+# Populated in main() after logging is ready.
+# Maps project name -> { "path": Path, "branch": str, "github_url": str }
+REPOS: dict = {}
+
+
+def load_repos() -> dict:
+    """
+    Load repos.json and return a mapping of project name -> repo config dict.
+    Each config dict has keys: path (Path), branch (str), github_url (str).
+    Exits immediately if the file is missing, malformed, or any listed path
+    does not exist on disk.
+    """
+    if not REPOS_FILE.exists():
+        print(f"[FATAL] repos.json not found at {REPOS_FILE}", flush=True)
+        print(f"[FATAL] Create repos.json next to forge.py. See docstring for format.", flush=True)
+        sys.exit(1)
+    try:
+        raw = json.loads(REPOS_FILE.read_text())
+    except json.JSONDecodeError as e:
+        print(f"[FATAL] repos.json is not valid JSON: {e}", flush=True)
+        sys.exit(1)
+    if not isinstance(raw, dict) or not raw:
+        print("[FATAL] repos.json must be a non-empty JSON object.", flush=True)
+        sys.exit(1)
+
+    resolved = {}
+    errors   = []
+
+    for name, entry in raw.items():
+        # Support both old flat-string format and new object format
+        if isinstance(entry, str):
+            # Legacy: "anvilml": "/path/to/repo"
+            raw_path   = entry
+            branch     = "main"
+            github_url = ""
+        elif isinstance(entry, dict):
+            raw_path   = entry.get("path", "")
+            branch     = entry.get("branch", "main")
+            github_url = entry.get("github_url", "")
+        else:
+            errors.append(f"  {name!r}: entry must be a string path or object with 'path' key")
+            continue
+
+        if not raw_path:
+            errors.append(f"  {name!r}: missing 'path' field")
+            continue
+
+        p = Path(raw_path).resolve()
+        if not p.exists():
+            errors.append(f"  {name!r}: path does not exist: {p}")
+        elif not p.is_dir():
+            errors.append(f"  {name!r}: path is not a directory: {p}")
+        else:
+            resolved[name] = {
+                "path":       p,
+                "branch":     branch,
+                "github_url": github_url,
+            }
+
+    if errors:
+        print("[FATAL] repos.json contains errors:", flush=True)
+        for e in errors:
+            print(e, flush=True)
+        sys.exit(1)
+
+    return resolved
+
+
+def resolve_project_path(project: str) -> Path:
+    """Return the absolute repo Path for a project name or raise KeyError."""
+    if project not in REPOS:
+        registered = ", ".join(sorted(REPOS.keys())) or "(none)"
+        raise KeyError(
+            f"Project {project!r} is not registered in repos.json. "
+            f"Registered: {registered}"
+        )
+    return REPOS[project]["path"]
+
+
+def resolve_project_branch(project: str) -> str:
+    """Return the configured working branch for a project or raise KeyError."""
+    if project not in REPOS:
+        registered = ", ".join(sorted(REPOS.keys())) or "(none)"
+        raise KeyError(
+            f"Project {project!r} is not registered in repos.json. "
+            f"Registered: {registered}"
+        )
+    return REPOS[project]["branch"]
+
+
+def resolve_project_tasks_dir(project: str) -> Path:
+    """
+    Return the path to the tasks directory for a project.
+    Convention: <repo_root>/.forge/tasks/
+    """
+    return resolve_project_path(project) / ".forge" / "tasks"
+
+
+def repo_reports_dir(project: str) -> Path:
+    """<repo>/.forge/reports/ — matches .clinerules section 11.1."""
+    return resolve_project_path(project) / ".forge" / "reports"
+
+
+def repo_state_dir(project: str) -> Path:
+    """<repo>/.forge/state/ — matches .clinerules section 11.2."""
+    return resolve_project_path(project) / ".forge" / "state"
+
+
+def repo_current_task_file(project: str) -> Path:
+    return repo_state_dir(project) / "CURRENT_TASK.md"
+
+
+def ensure_repo_forge_dirs(project: str) -> None:
+    """Create .forge/reports/ and .forge/state/ inside the target repo if absent."""
+    repo_reports_dir(project).mkdir(parents=True, exist_ok=True)
+    repo_state_dir(project).mkdir(parents=True, exist_ok=True)
+
+
+def write_current_task_file(task: dict, step: str, status: str) -> None:
+    """
+    Write .forge/state/CURRENT_TASK.md before invoking Cline.
+
+    Cline reads this file at session start (.clinerules §1) and verifies that
+    the Task field matches the injected TASK_ID.  The Forge must write it before
+    every Cline invocation so the identity check always passes.
+
+    step   — "PLAN" or "IMPLEMENT"
+    status — "IN_PROGRESS" when written by The Forge before Cline runs.
+             Cline overwrites this with COMPLETE, PARTIAL, or BLOCKED at
+             session end.  The Forge never reads back this file — it uses
+             state.json exclusively.
+    """
+    ensure_repo_forge_dirs(task["project"])
+    content = (
+        f"Task: {task['id']}\n"
+        f"Step: {step}\n"
+        f"Status: {status}\n"
+        f"Updated: {_ts()}\n"
+    )
+    repo_current_task_file(task["project"]).write_text(content)
+    log(f"[{task['id']}] Wrote CURRENT_TASK.md  Step={step}  Status={status}")
+
+
+# ─── Branch management ────────────────────────────────────────────────────────
+
+def get_current_branch(repo_path: Path) -> Optional[str]:
+    """Return the name of the currently checked-out branch, or None on error."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def ensure_on_branch(project: str) -> bool:
+    """
+    Verify the repo is on the branch configured in repos.json.
+    If it is on a different branch, attempt to switch.
+
+    Switch strategy:
+      1. If the target branch exists locally  → git checkout <branch>
+      2. If not local but exists on origin    → git checkout -b <branch> origin/<branch>
+      3. If nowhere                           → fatal error, manual intervention required
+
+    Returns True if the repo is (or was switched to) the correct branch.
+    Returns False only on unrecoverable error; The Forge will stop the task.
+    """
+    try:
+        repo_path  = resolve_project_path(project)
+        target     = resolve_project_branch(project)
+    except KeyError as e:
+        log_err(f"[branch] {e}")
+        return False
+
+    current = get_current_branch(repo_path)
+    if current is None:
+        log_err(f"[branch] Could not determine current branch in {repo_path}")
+        return False
+
+    if current == target:
+        return True  # already correct
+
+    log_warn(
+        f"[branch] {project}: on branch '{current}', "
+        f"repos.json requires '{target}' — switching..."
+    )
+
+    # Check if target branch exists locally
+    local_check = subprocess.run(
+        ["git", "rev-parse", "--verify", target],
+        cwd=repo_path, capture_output=True, text=True,
+    )
+    if local_check.returncode == 0:
+        # Branch exists locally — just check out
+        result = subprocess.run(
+            ["git", "checkout", target],
+            cwd=repo_path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log(f"[branch] {project}: switched to '{target}'")
+            return True
+        log_err(f"[branch] {project}: checkout '{target}' failed: {result.stderr.strip()}")
+        return False
+
+    # Branch does not exist locally — try to create from origin
+    fetch = subprocess.run(
+        ["git", "fetch", "origin"],
+        cwd=repo_path, capture_output=True, text=True,
+    )
+    if fetch.returncode != 0:
+        log_warn(f"[branch] {project}: fetch failed: {fetch.stderr.strip()}")
+
+    remote_check = subprocess.run(
+        ["git", "rev-parse", "--verify", f"origin/{target}"],
+        cwd=repo_path, capture_output=True, text=True,
+    )
+    if remote_check.returncode == 0:
+        result = subprocess.run(
+            ["git", "checkout", "-b", target, f"origin/{target}"],
+            cwd=repo_path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log(f"[branch] {project}: created and switched to '{target}' from origin")
+            return True
+        log_err(f"[branch] {project}: checkout -b '{target}' failed: {result.stderr.strip()}")
+        return False
+
+    log_err(
+        f"[branch] {project}: branch '{target}' does not exist locally or on origin. "
+        f"Create it manually: git checkout -b {target}"
+    )
+    return False
+
 
 # Discord — bot token and guild ID still come from environment (secrets)
 DISCORD_BOT_TOKEN = os.environ.get("FORGE_DISCORD_TOKEN", "")
@@ -72,8 +347,8 @@ DISCORD_GUILD_ID  = os.environ.get("FORGE_DISCORD_GUILD_ID", "")
 # Channel IDs — hardcoded, no env var fallback needed
 # #forge-reports   : public broadcast, never polled
 # #forge-approvals : owner-only, all approval requests go here
-DISCORD_REPORTS_CHANNEL_ID   = "1508515907952054323"
-DISCORD_APPROVALS_CHANNEL_ID = "1508488060298334229"
+DISCORD_REPORTS_CHANNEL_ID   = "1509917708093886475"
+DISCORD_APPROVALS_CHANNEL_ID = "1509917666889044068"
 
 # Owner gate — only reactions from this Discord user ID are acted upon.
 # User IDs are permanent; usernames can be changed.
@@ -151,21 +426,136 @@ def save_state(state: dict) -> None:
 
 # ─── Task DAG ─────────────────────────────────────────────────────────────────
 
-def load_tasks() -> list[dict]:
-    if not TASKS_FILE.exists():
-        log_err(f"tasks.json not found at {TASKS_FILE}")
+def load_tasks(project: Optional[str] = None, phase: Optional[int] = None) -> list[dict]:
+    """
+    Load task definitions from <repo>/.forge/tasks/tasks_phase<NNN>.json files
+    and return a merged, deduplicated list.
+
+    Resolution strategy:
+      - If project is given: load tasks only from that project's .forge/tasks/ dir.
+      - If project is None:  load tasks from ALL registered projects' .forge/tasks/ dirs.
+      - If phase is given:   include only phase files with number <= phase.
+      - If phase is None:    include all phase files found.
+
+    Duplicate task IDs across any files are a fatal error.
+
+    The caller receives one flat list ordered by (project_name, phase_number, file_order).
+    Tasks never cross project borders — each task targets exactly one project.
+    """
+    import re as _re
+    pattern = _re.compile(r"^tasks_phase(\d{3})\.json$", _re.IGNORECASE)
+
+    projects_to_load = [project] if project else sorted(REPOS.keys())
+
+    merged:   list[dict]       = []
+    seen_ids: dict[str, Path]  = {}
+    files_loaded: list[str]    = []
+
+    for proj in projects_to_load:
+        try:
+            tasks_dir = resolve_project_tasks_dir(proj)
+        except KeyError:
+            continue  # project not in REPOS — already caught by schema validation
+
+        if not tasks_dir.is_dir():
+            log_warn(f"Tasks directory not found for {proj!r}: {tasks_dir} — skipping")
+            continue
+
+        found: list[tuple[int, Path]] = []
+        for p in tasks_dir.iterdir():
+            m = pattern.match(p.name)
+            if m:
+                found.append((int(m.group(1)), p))
+        found.sort(key=lambda x: x[0])
+
+        if phase is not None:
+            candidates = [p for n, p in found if n <= phase]
+        else:
+            candidates = [p for _, p in found]
+
+        for path in candidates:
+            try:
+                chunk: list[dict] = json.loads(path.read_text())
+            except json.JSONDecodeError as e:
+                log_err(f"Invalid JSON in {path}: {e}")
+                sys.exit(1)
+            if not isinstance(chunk, list):
+                log_err(f"{path}: expected a JSON array, got {type(chunk).__name__}")
+                sys.exit(1)
+            for task in chunk:
+                tid = task.get("id", "<missing>")
+                if tid in seen_ids:
+                    log_err(
+                        f"Duplicate task ID {tid!r} found in both "
+                        f"{seen_ids[tid].name} and {path.name}"
+                    )
+                    sys.exit(1)
+                seen_ids[tid] = path
+                merged.append(task)
+            files_loaded.append(str(path.relative_to(FORGE_DIR.parent)
+                                    if path.is_relative_to(FORGE_DIR.parent)
+                                    else path))
+
+    if not merged:
+        log_err(
+            "No task files found. Each project must have .forge/tasks/tasks_phase001.json "
+            "(and subsequent phase files) inside its repository root."
+        )
         sys.exit(1)
-    return json.loads(TASKS_FILE.read_text())
+
+    log(f"Loaded {len(merged)} tasks from {len(files_loaded)} file(s): "
+        f"{', '.join(Path(f).name for f in files_loaded)}")
+    return merged
+
 
 def build_dag(tasks: list[dict]) -> dict[str, dict]:
     return {t["id"]: t for t in tasks}
 
+
+def validate_task_schema(task: dict) -> list[str]:
+    """
+    Validate a task dict against the required schema.
+    Returns a list of error strings (empty = valid).
+    Each task must have exactly one 'project' (not 'repos') referencing a
+    registered entry in repos.json.  Multi-repo tasks are not permitted;
+    they must be split into separate single-project tasks.
+    """
+    errors = []
+    if "id" not in task:
+        errors.append("missing required field 'id'")
+    if "description" not in task:
+        errors.append("missing required field 'description'")
+    if "phase" not in task:
+        errors.append("missing required field 'phase'")
+
+    # 'repos' is the old field name — catch it and tell the author what to fix
+    if "repos" in task and "project" not in task:
+        errors.append(
+            f"field 'repos' is no longer supported. "
+            f"Rename it to 'project' and set a single project name string. "
+            f"Multi-repo tasks must be split into separate tasks."
+        )
+    elif "project" not in task:
+        errors.append("missing required field 'project' (string, e.g. 'anvilml')")
+    else:
+        project = task["project"]
+        if not isinstance(project, str) or not project.strip():
+            errors.append("field 'project' must be a non-empty string")
+        elif project not in REPOS:
+            registered = ", ".join(sorted(REPOS.keys())) or "(none)"
+            errors.append(
+                f"project {project!r} is not registered in repos.json. "
+                f"Registered: {registered}"
+            )
+    return errors
+
+
 def find_next_task(tasks: list[dict], state: dict) -> Optional[dict]:
     """Return the first unblocked task not yet completed or failed."""
-    completed = set(state["completed"])
-    failed = set(state["failed"])
+    completed    = set(state["completed"])
+    failed       = set(state["failed"])
     needs_review = set(state["needs_review"])
-    blocked = failed | needs_review
+    blocked      = failed | needs_review
 
     for task in tasks:
         tid = task["id"]
@@ -179,14 +569,15 @@ def find_next_task(tasks: list[dict], state: dict) -> Optional[dict]:
             return task
     return None
 
-def print_dag_status(tasks: list[dict], state: dict) -> None:
-    completed = set(state["completed"])
-    failed = set(state["failed"])
-    needs_review = set(state["needs_review"])
-    in_progress = state.get("in_progress")
 
-    print(f"\n{'Task':<12} {'Status':<14} {'Description'}")
-    print("─" * 80)
+def print_dag_status(tasks: list[dict], state: dict) -> None:
+    completed    = set(state["completed"])
+    failed       = set(state["failed"])
+    needs_review = set(state["needs_review"])
+    in_progress  = state.get("in_progress")
+
+    print(f"\n{'Task':<12} {'Status':<14} {'Project':<12} {'Description'}")
+    print("─" * 90)
     for task in tasks:
         tid = task["id"]
         if tid in completed:
@@ -203,7 +594,8 @@ def print_dag_status(tasks: list[dict], state: dict) -> None:
                 status = "⬜ unblocked"
             else:
                 status = "⏸  blocked"
-        print(f"{tid:<12} {status:<14} {task['description']}")
+        proj = task.get("project", "?")
+        print(f"{tid:<12} {status:<14} {proj:<12} {task['description']}")
     print()
 
 # ─── PDF generation ───────────────────────────────────────────────────────────
@@ -336,13 +728,7 @@ td {
 
 tr:nth-child(even) td { background: #f8fafc; }
 
-hr {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 14pt 0;
-}
-
-strong { font-weight: 600; color: var(--heading); }
+strong { font-weight: 600; }
 em { color: var(--muted); }
 
 .header-meta {
@@ -395,7 +781,7 @@ def _markdown_to_pdf(markdown_text: str, title: str = "") -> Optional[bytes]:
                 html_lines.append("<br>")
         html_body = "\n".join(html_lines)
 
-    title_html = f"<title>{title}</title>" if title else ""
+    title_html  = f"<title>{title}</title>" if title else ""
     clean_title = re.sub(r"\.(pdf|md|txt)$", "", title) if title else "Report"
 
     full_html = f"""<!DOCTYPE html>
@@ -478,10 +864,8 @@ class DiscordClient:
         Falls back to plain .txt attachment if PDF generation fails.
         Returns the message ID or None on failure.
         """
-        # Ensure filename ends in .pdf
         pdf_filename = re.sub(r"\.(md|txt|html)$", "", filename) + ".pdf"
-
-        pdf_bytes = _markdown_to_pdf(file_content, title=pdf_filename)
+        pdf_bytes    = _markdown_to_pdf(file_content, title=pdf_filename)
 
         try:
             headers = {"Authorization": self.headers["Authorization"]}
@@ -489,7 +873,6 @@ class DiscordClient:
                 files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
                 log(f"Discord send_file: sending PDF ({len(pdf_bytes)} bytes) as {pdf_filename}")
             else:
-                # Fallback to plain text if PDF generation failed
                 log_warn("PDF generation failed — sending as plain text")
                 txt_filename = pdf_filename.replace(".pdf", ".txt")
                 files = {"file": (txt_filename, file_content.encode("utf-8"), "text/plain; charset=utf-8")}
@@ -557,11 +940,25 @@ def get_discord() -> Optional["DiscordClient"]:
 
 # ─── Git helpers ──────────────────────────────────────────────────────────────
 
-def get_recent_commits(repo_path: Path, count: int = 5) -> list[str]:
-    """Return the last N commit one-liners from a repo."""
+def get_recent_commits(repo_path: Path, branch: Optional[str] = None) -> list[str]:
+    """
+    Return commit one-liners for this task only.
+    When branch is provided, returns commits in origin/<branch>..HEAD (unpushed only).
+    Falls back to git log -5 if branch is not provided or origin ref is unavailable.
+    """
     try:
+        if branch:
+            result = subprocess.run(
+                ["git", "log", f"origin/{branch}..HEAD", "--oneline"],
+                cwd=repo_path, capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+                if lines:
+                    return lines
+        # Fallback: last 5 commits
         result = subprocess.run(
-            ["git", "log", f"-{count}", "--oneline"],
+            ["git", "log", "-5", "--oneline"],
             cwd=repo_path, capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -583,11 +980,11 @@ def get_changed_files(repo_path: Path) -> list[str]:
         pass
     return []
 
-def has_unpushed_commits(repo_path: Path) -> bool:
-    """Return True if the local branch is ahead of origin/develop."""
+def has_unpushed_commits(repo_path: Path, branch: str) -> bool:
+    """Return True if the local branch is ahead of origin/<branch>."""
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/develop..HEAD"],
+            ["git", "rev-list", "--count", f"origin/{branch}..HEAD"],
             cwd=repo_path, capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -608,27 +1005,26 @@ def has_dirty_working_tree(repo_path: Path) -> bool:
     except Exception:
         return False
 
-def reset_repo_to_origin(repo_path: Path, repo_label: str) -> bool:
+def reset_repo_to_origin(repo_path: Path, repo_label: str, branch: str) -> bool:
     """
-    Hard-reset repo to origin/develop, discarding all local commits
+    Hard-reset repo to origin/<branch>, discarding all local commits
     and unstaged changes. Returns True on success.
     """
-    log(f"[git] Resetting {repo_label} to origin/develop...")
+    log(f"[git] Resetting {repo_label} to origin/{branch}...")
     try:
-        # Fetch first to ensure origin/develop is current
         fetch = subprocess.run(
-            ["git", "fetch", "origin", "develop"],
+            ["git", "fetch", "origin", branch],
             cwd=repo_path, capture_output=True, text=True,
         )
         if fetch.returncode != 0:
             log_warn(f"[git] fetch failed in {repo_label}: {fetch.stderr}")
 
         reset = subprocess.run(
-            ["git", "reset", "--hard", "origin/develop"],
+            ["git", "reset", "--hard", f"origin/{branch}"],
             cwd=repo_path, capture_output=True, text=True,
         )
         if reset.returncode == 0:
-            log(f"[git] {repo_label} reset to origin/develop: {reset.stdout.strip()}")
+            log(f"[git] {repo_label} reset to origin/{branch}: {reset.stdout.strip()}")
             return True
         else:
             log_err(f"[git] reset failed in {repo_label}: {reset.stderr}")
@@ -653,229 +1049,302 @@ def clean_repo_working_tree(repo_path: Path, repo_label: str) -> bool:
         log_warn(f"[git] clean exception in {repo_label}: {e}")
         return False
 
-def revert_task_repos(task: dict) -> bool:
+def revert_task_repo(task: dict) -> bool:
     """
-    Reset all repos touched by this task to origin/develop.
-    Called before retrying a failed task to ensure a clean codebase.
-    Returns True if all resets succeeded.
+    Reset the repository for this task to origin/<branch>, discarding all
+    local commits and unstaged changes. Called before retrying a failed task.
+    Returns True on success.
     """
-    repos = task.get("repos", ["root"])
-    repo_paths = {
-        "root": REPO_ROOT,
-        "anvilml": REPO_ROOT / "backend",
-        "bloomeryui": REPO_ROOT / "frontend",
-    }
+    project = task["project"]
+    try:
+        path   = resolve_project_path(project)
+        branch = resolve_project_branch(project)
+    except KeyError as e:
+        log_err(f"[git] revert_task_repo: {e}")
+        return False
 
-    all_ok = True
-    for repo_key in repos:
-        path = repo_paths.get(repo_key)
-        if not path or not path.exists():
-            log_warn(f"[git] repo path for '{repo_key}' not found, skipping")
-            continue
+    dirty    = has_dirty_working_tree(path)
+    unpushed = has_unpushed_commits(path, branch)
 
-        dirty = has_dirty_working_tree(path)
-        unpushed = has_unpushed_commits(path)
-
-        if not dirty and not unpushed:
-            log(f"[git] {repo_key}: clean, nothing to reset")
-            continue
-
-        if unpushed:
-            log_warn(f"[git] {repo_key}: has {' unpushed commits' if unpushed else ''}"
-                     f"{' and dirty tree' if dirty else ''} — resetting")
-
-        ok = reset_repo_to_origin(path, repo_key)
-        if ok and dirty:
-            clean_repo_working_tree(path, repo_key)
-        all_ok = all_ok and ok
-
-    return all_ok
-
-def _forge_push_repos(task: dict) -> bool:
-    """
-    Push all submodule repos touched by this task to origin/develop.
-    Called by Forge after push approval — Cline only commits locally in STEP 4.
-    Returns True if all pushes succeeded.
-    """
-    repos = task.get("repos", [])
-    repo_paths = {
-        "anvilml":    REPO_ROOT / "backend",
-        "bloomeryui": REPO_ROOT / "frontend",
-    }
-
-    # Filter to repos that actually have unpushed commits
-    to_push = []
-    for repo_key in repos:
-        if repo_key == "root":
-            continue  # root is handled by _forge_commit_root
-        path = repo_paths.get(repo_key)
-        if not path or not path.exists():
-            continue
-        if has_unpushed_commits(path):
-            to_push.append((repo_key, path))
-        else:
-            log(f"[git] {repo_key}: nothing to push")
-
-    if not to_push:
-        log("[git] No submodule repos have unpushed commits")
+    if not dirty and not unpushed:
+        log(f"[git] {project}: clean, nothing to reset")
         return True
 
-    all_ok = True
-    for repo_key, path in to_push:
-        log(f"[git] Pushing {repo_key} to origin/develop...")
-        try:
-            result = subprocess.run(
-                ["git", "push", "origin", "develop"],
-                cwd=path, capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                log(f"[git] {repo_key}: pushed successfully")
-            else:
-                log_err(f"[git] {repo_key}: push failed: {result.stderr.strip()}")
-                all_ok = False
-        except Exception as e:
-            log_err(f"[git] {repo_key}: push exception: {e}")
-            all_ok = False
+    log_warn(f"[git] {project}: resetting to origin/{branch} "
+             f"({'unpushed commits + ' if unpushed else ''}{'dirty tree' if dirty else ''})")
+    ok = reset_repo_to_origin(path, project, branch)
+    if ok and dirty:
+        clean_repo_working_tree(path, project)
+    return ok
 
-    return all_ok
-    """Collect commit info from all repos the task touches."""
-    info = {}
-    repos = task.get("repos", ["root"])
-    repo_paths = {
-        "root": REPO_ROOT,
-        "anvilml": REPO_ROOT / "backend",
-        "bloomeryui": REPO_ROOT / "frontend",
+def validate_commit_messages(task: dict) -> list[str]:
+    """
+    Check recent commits in the task's project repo against Conventional Commits.
+    Returns a list of warning strings (empty = all good).
+    Convention: type(scope): description   (.clinerules section 5.3)
+    """
+    VALID_TYPES  = {"feat", "fix", "chore", "docs", "test", "refactor"}
+    VALID_SCOPES = {
+        # Crate-level scopes
+        "anvilml-core", "anvilml-ipc", "anvilml-hardware", "anvilml-registry",
+        "anvilml-worker", "anvilml-scheduler", "anvilml-server",
+        "py-worker",
+        # Project-level scopes (used by The Forge for workspace-wide scaffold tasks)
+        "anvilml", "bloomeryui", "sindristudio",
     }
-    for repo_key in repos:
-        path = repo_paths.get(repo_key)
-        if path and path.exists():
-            commits = get_recent_commits(path)
-            changed = get_changed_files(path)
-            info[repo_key] = {"commits": commits, "changed_files": changed}
+    CONVENTIONAL_RE = re.compile(r"^(\w+)\(([^)]+)\):\s+\S")
+
+    project = task.get("project", "")
+    warnings = []
+    try:
+        path   = resolve_project_path(project)
+        branch = resolve_project_branch(project)
+    except KeyError:
+        return [f"project {project!r} not in repos.json — cannot validate commits"]
+
+    if not path.exists():
+        return [f"project {project!r} path does not exist: {path}"]
+    if not has_unpushed_commits(path, branch):
+        return []
+
+    # Validate only the single HEAD commit — The Forge's own commit for this task.
+    # Validating all unpushed commits would surface noise from prior runs or
+    # manual commits that are not the responsibility of the current task.
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=path, capture_output=True, text=True,
+        )
+        subjects = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+    except Exception as e:
+        return [f"git log failed for {project!r}: {e}"]
+
+    for subject in subjects:
+        m = CONVENTIONAL_RE.match(subject)
+        if not m:
+            warnings.append(f"{project}: non-conventional commit: `{subject[:80]}`")
+            continue
+        ctype, scope = m.group(1), m.group(2)
+        if ctype not in VALID_TYPES:
+            warnings.append(
+                f"{project}: unknown type `{ctype}` in: `{subject[:80]}`"
+            )
+        if scope not in VALID_SCOPES:
+            warnings.append(
+                f"{project}: unknown scope `{scope}` in: `{subject[:80]}` "
+                f"— valid scopes: {', '.join(sorted(VALID_SCOPES))}"
+            )
+
+    return warnings
+
+
+def collect_commit_info(task: dict) -> dict:
+    """
+    Collect commit info for this task from the project repo.
+    Only includes commits not yet pushed to origin (origin/<branch>..HEAD).
+    Returns {project_name: {commits: [...], changed_files: [...]}}
+    """
+    project = task.get("project", "")
+    info = {}
+    try:
+        path   = resolve_project_path(project)
+        branch = resolve_project_branch(project)
+    except KeyError:
+        return info
+    if path.exists():
+        info[project] = {
+            "commits":       get_recent_commits(path, branch=branch),
+            "changed_files": get_changed_files(path),
+        }
     return info
 
-def _forge_commit_root(task_id: str, task_desc: str) -> Optional[str]:
-    """
-    Commit and push the SindriStudio root repo.
 
-    Stages everything in the root repo:
-      - Updated submodule pointers (backend, frontend)
-      - .cline/reports/{task_id}.md
-      - .cline/state/CURRENT_TASK.md
-      - Any other root-level files changed by Cline
-
-    Returns the short commit hash on success, None if nothing to commit or on error.
-    This function is always called by the Forge after a successful act phase —
-    it is NOT delegated to Cline.
+def _forge_push(task: dict) -> bool:
     """
+    Push the task's project repo to origin/<branch>.
+    Called by The Forge after push approval.
+    Cline stages files; The Forge commits and is the only actor that pushes.
+    Returns True on success.
+    """
+    project = task["project"]
     try:
-        # Stage everything in the root repo
+        path   = resolve_project_path(project)
+        branch = resolve_project_branch(project)
+    except KeyError as e:
+        log_err(f"[git] _forge_push: {e}")
+        return False
+
+    if not has_unpushed_commits(path, branch):
+        log(f"[git] {project}: nothing to push")
+        return True
+
+    log(f"[git] Pushing {project} to origin/{branch}...")
+    try:
+        result = subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log(f"[git] {project}: pushed successfully")
+            return True
+        log_err(f"[git] {project}: push failed: {result.stderr.strip()}")
+        return False
+    except Exception as e:
+        log_err(f"[git] {project}: push exception: {e}")
+        return False
+
+
+def _forge_commit(task: dict) -> Optional[str]:
+    """
+    Stage and commit everything in the task's project repo.
+
+    Staged content:
+      - All source/test/CI changes made by Cline
+      - .forge/reports/<task_id>_plan.md
+      - .forge/reports/<task_id>_implement.md
+      - .forge/state/CURRENT_TASK.md
+
+    The commit message is derived from the task description and uses
+    Conventional Commits format.  The Forge is the sole author of this
+    commit; Cline is not permitted to commit in the project repo during
+    the ACT session (Cline only stages; The Forge commits and pushes).
+
+    Returns the short commit hash on success, None on error or nothing-to-commit.
+    """
+    project   = task["project"]
+    task_id   = task["id"]
+    task_desc = task["description"]
+    try:
+        path = resolve_project_path(project)
+    except KeyError as e:
+        log_err(f"[git] _forge_commit: {e}")
+        return None
+
+    try:
         stage = subprocess.run(
             ["git", "add", "-A"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=path, capture_output=True, text=True,
         )
         if stage.returncode != 0:
-            log_err(f"[git] root git add -A failed: {stage.stderr}")
+            log_err(f"[git] {project} git add -A failed: {stage.stderr}")
             return None
 
-        # Check if there is actually anything to commit
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=path, capture_output=True, text=True,
         )
         if not status.stdout.strip():
-            log(f"[git] Root repo: nothing to commit for {task_id}")
+            log(f"[git] {project}: nothing to commit for {task_id}")
             return None
 
-        # Commit
+        # Derive conventional commit type from task description
+        desc_lower = task_desc.lower()
+        if any(w in desc_lower for w in ("fix", "repair", "correct", "resolve")):
+            commit_type = "fix"
+        elif any(w in desc_lower for w in ("doc", "readme", "comment")):
+            commit_type = "docs"
+        elif any(w in desc_lower for w in ("refactor", "restructure")):
+            commit_type = "refactor"
+        elif any(w in desc_lower for w in ("test",)):
+            commit_type = "test"
+        else:
+            commit_type = "feat"
+
         commit_msg = (
-            f"chore(root): update submodules and reports for {task_id}\n\n"
-            f"Task: {task_id}\n"
+            f"{commit_type}({project}): {task_id} — {task_desc[:60]}\n\n"
+            f"Task:        {task_id}\n"
             f"Description: {task_desc}\n"
-            f"Committed by Forge orchestrator"
+            f"Phase:       {task.get('phase', '?')}\n"
+            f"Reports:     .forge/reports/{task_id}_plan.md\n"
+            f"             .forge/reports/{task_id}_implement.md\n"
+            f"Committed by Forge orchestrator (not Cline)"
         )
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=path, capture_output=True, text=True,
         )
         if commit.returncode != 0:
-            log_err(f"[git] root commit failed: {commit.stderr}")
+            log_err(f"[git] {project} commit failed: {commit.stderr}")
             return None
 
-        # Push
-        push = subprocess.run(
-            ["git", "push", "origin", "develop"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
-        )
-        if push.returncode != 0:
-            log_err(f"[git] root push failed: {push.stderr}")
-            # Commit succeeded but push failed — return hash with warning
-            hash_result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=REPO_ROOT, capture_output=True, text=True,
-            )
-            return f"{hash_result.stdout.strip()} (NOT PUSHED)"
-
-        # Return short hash
         hash_result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=path, capture_output=True, text=True,
         )
         return hash_result.stdout.strip()
 
     except Exception as e:
-        log_err(f"[git] _forge_commit_root exception: {e}")
+        log_err(f"[git] _forge_commit exception for {project}: {e}")
         return None
 
-# ─── Disk report files ────────────────────────────────────────────────────────
+# ─── Disk report files ─────────────────────────────────────────────────────────
+# Reports live inside the target repository under .forge/reports/.
+# This keeps the reports version-controlled alongside the code they describe
+# and matches .clinerules sections 11.1 and 11.2.
+
+def plan_report_path(task: dict) -> Path:
+    """<repo>/.forge/reports/<TASK_ID>_plan.md"""
+    return repo_reports_dir(task["project"]) / f"{task['id']}_plan.md"
+
+def implement_report_path(task: dict) -> Path:
+    """<repo>/.forge/reports/<TASK_ID>_implement.md"""
+    return repo_reports_dir(task["project"]) / f"{task['id']}_implement.md"
 
 def write_forge_plan_report(task: dict, plan_text: str, attempt: int) -> Path:
     """
-    Write the plan report for a task to .cline/reports/{TASK-ID}.md.
-    Cline also writes to this path in STEP 1 — this ensures the plan
-    is on disk even if we're reading from a previous session's output.
-    The file is committed to git as part of STEP 4's 'git add -A'.
+    Ensure <repo>/.forge/reports/<TASK_ID>_plan.md exists on disk.
+
+    If Cline wrote the file during the PLAN session it is left untouched.
+    If Cline failed to write it The Forge writes a minimal valid report from
+    whatever plan text was captured from stdout, so the Discord attachment
+    and approval flow can still proceed.
+
+    This file is permanent — it is never overwritten by the ACT session.
+    The Forge stages and commits it as part of _forge_commit().
     Returns the report path.
     """
-    reports_dir = REPO_ROOT / ".cline" / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    report_path = reports_dir / f"{task['id']}.md"
+    ensure_repo_forge_dirs(task["project"])
+    report_path = plan_report_path(task)
 
-    # Only write the forge-level header if the file doesn't already exist
-    # (Cline writes the full report in STEP 1; we don't overwrite it)
     if not report_path.exists():
         header = (
-            f"# Task Report: {task['id']}\n"
-            f"{task['description']}\n"
-            f"Phase: {task.get('phase', '?')}\n"
-            f"Forge plan attempt: {attempt}\n\n"
+            f"# Plan Report: {task['id']}\n\n"
+            f"| Field       | Value |\n"
+            f"|-------------|-------|\n"
+            f"| Task ID     | {task['id']} |\n"
+            f"| Phase       | {task.get('phase', '?')} |\n"
+            f"| Description | {task['description']} |\n"
+            f"| Depends on  | {', '.join(task.get('prereqs', [])) or 'none'} |\n"
+            f"| Project     | {task['project']} |\n"
+            f"| Attempt     | {attempt} |\n\n"
             f"## Plan\n\n"
             f"{plan_text}\n"
         )
         report_path.write_text(header)
-        log(f"[{task['id']}] Plan report written to {report_path}")
+        log(f"[{task['id']}] Plan report written to "
+            f"{report_path.relative_to(resolve_project_path(task['project']))}")
     else:
-        log(f"[{task['id']}] Plan report already exists at {report_path} (written by Cline)")
+        log(f"[{task['id']}] Plan report already exists (written by Cline) — not overwriting")
 
     return report_path
 
-def read_report_file(task_id: str) -> str:
-    """Read the full report file for a task, or return empty string."""
-    report_path = REPO_ROOT / ".cline" / "reports" / f"{task_id}.md"
-    if report_path.exists():
-        return report_path.read_text()
-    return ""
+def read_plan_report(task: dict) -> str:
+    """Read <repo>/.forge/reports/<TASK_ID>_plan.md, or return empty string."""
+    p = plan_report_path(task)
+    return p.read_text() if p.exists() else ""
+
+def read_implement_report(task: dict) -> str:
+    """Read <repo>/.forge/reports/<TASK_ID>_implement.md, or return empty string."""
+    p = implement_report_path(task)
+    return p.read_text() if p.exists() else ""
 
 def extract_plan_section(report_text: str, task_id: str) -> str:
-    """Extract the ## Plan section from a task report."""
+    """Extract the ## Plan section from a plan report, or return the full text."""
     if not report_text:
         return f"[Plan report not yet written for {task_id}]"
-
     match = re.search(r"## Plan\n(.*?)(?=^##|\Z)", report_text, re.DOTALL | re.MULTILINE)
     if match:
         return match.group(0).strip()
-
-    # Return first 3000 chars of whatever the report contains
     return report_text[:3000]
 
 # ─── Discord message formatting ───────────────────────────────────────────────
@@ -926,7 +1395,7 @@ def format_plan_approval_request(task: dict, attempt: int,
     tid     = task["id"]
     desc    = task["description"]
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
-    repos   = ", ".join(task.get("repos", ["root"]))
+    project = task.get("project", "(unknown)")
 
     header = f"**🔐 PLAN APPROVAL — `{tid}`**"
     if attempt > 1:
@@ -935,7 +1404,7 @@ def format_plan_approval_request(task: dict, attempt: int,
     parts = [
         header,
         f"**{desc}**",
-        f"Repos: `{repos}` · Prereqs: `{prereqs}`",
+        f"Project: `{project}` · Prereqs: `{prereqs}`",
     ]
 
     if feedback:
@@ -955,7 +1424,7 @@ def format_push_approval_request(task: dict, commit_info: dict) -> str:
     Format a push approval request for #forge-approvals.
     Includes task ID for cross-referencing with #forge-reports.
     """
-    tid = task["id"]
+    tid  = task["id"]
     desc = task["description"]
 
     parts = [
@@ -988,8 +1457,8 @@ def format_implementation_caption(task: dict, commit_info: dict) -> str:
     Caption posted above the attached implementation report .md file in #forge-reports.
     Shows commit hashes only — the full report is in the attachment.
     """
-    tid  = task["id"]
-    desc = task["description"]
+    tid   = task["id"]
+    desc  = task["description"]
     phase = task.get("phase", "?")
 
     parts = [
@@ -1034,7 +1503,7 @@ def wait_for_approval(
         return True, ""
 
     log(f"Waiting for approval on message {message_id} (owner: {FORGE_OWNER_ID}, timeout {timeout}s)...")
-    deadline = time.monotonic() + timeout
+    deadline      = time.monotonic() + timeout
     last_reminder = time.monotonic()
 
     def mirror_reaction(emoji: str) -> None:
@@ -1150,23 +1619,24 @@ def _update_context_display(task_id: str, mode: str, pct: float,
         status   = "●  OK"
         color    = "\033[92m"  # green
 
-    reset = "\033[0m"
+    reset     = "\033[0m"
     bar_width = 40
-    filled = int(bar_width * pct / 100)
-    bar = bar_char * filled + "·" * (bar_width - filled)
+    filled    = int(bar_width * pct / 100)
+    bar       = bar_char * filled + "·" * (bar_width - filled)
 
     content = (
-        f"{color}{'─' * 50}{reset}\n"
+        f"{color}{'─' * 54}{reset}\n"
         f"  Task    : {task_id}  [{mode}]\n"
         f"  Updated : {_ts()}\n"
-        f"{'─' * 50}\n"
+        f"{'─' * 54}\n"
         f"\n"
         f"  {color}Context Usage:  {pct:.1f}%  {status}{reset}\n"
+        f"\n"
         f"  [{color}{bar}{reset}]\n"
         f"  {tokens_used:,} / {tokens_total:,} tokens\n"
         f"\n"
         f"  Threshold : {color}65% = {int(tokens_total * 0.65):,} tokens{reset}\n"
-        f"{'─' * 50}\n"
+        f"{'─' * 54}\n"
     )
     try:
         CONTEXT_LOG_FILE.write_text(content)
@@ -1200,66 +1670,79 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
 
     def flush_tokens() -> None:
         if token_buf:
-            text = "".join(token_buf).strip()
+            # Check for deferred iteration header sentinel
+            if len(token_buf) == 1 and token_buf[0].startswith("\x00ITER\x00"):
+                token_buf.clear()
+                return
+            text = "".join(
+                t for t in token_buf if not t.startswith("\x00ITER\x00")
+            ).strip()
             if text:
                 clf.write(f"  {text}\n")
                 clf.flush()
             token_buf.clear()
 
-    # ── Context usage extraction ──────────────────────────────────────────────
-    # Cline emits environment_details with a contextUsagePercent field (0-100).
-    # It may also appear nested inside an agent_event wrapper.
-    def _try_extract_context(payload: dict) -> None:
-        pct = payload.get("contextUsagePercent") or payload.get("context_usage_percent")
-        if pct is None:
-            # Try inside a details sub-object
-            details = payload.get("details", payload.get("environment_details", {}))
-            if isinstance(details, dict):
-                pct = details.get("contextUsagePercent") or details.get("context_usage_percent")
-        if pct is not None:
+    def emit_iter_header_if_pending() -> None:
+        """If a deferred iteration header is in the buffer, emit it now."""
+        for i, t in enumerate(token_buf):
+            if t.startswith("\x00ITER\x00"):
+                parts = t.split("\x00")
+                ts_val   = parts[2] if len(parts) > 2 else ""
+                iter_val = parts[3] if len(parts) > 3 else "?"
+                clf.write(f"\n  ── {ts_val} iteration {iter_val} ──\n")
+                clf.flush()
+                token_buf.pop(i)
+                return
+
+    if etype == "agent_event":
+        inner = event.get("event", {})
+        itype = inner.get("type", "")
+
+        if itype == "usage":
             try:
-                pct_f = float(pct)
-                # Try to get absolute counts if available
-                used  = int(payload.get("contextTokensUsed",  pct_f / 100 * 262144))
-                total = int(payload.get("contextWindowTokens", 262144))
-                _update_context_display(task_id, mode, pct_f, used, total)
-                # Also write a one-liner to cline.log at key thresholds
-                if pct_f >= 65:
-                    clf.write(f"  ⚠  [{ts}] CONTEXT {pct_f:.1f}% — APPROACHING LIMIT\n")
+                input_tokens = int(inner.get("inputTokens", 0))
+                total        = int(inner.get("contextWindow", 262144))
+                if total == 0:
+                    total = 262144
+                pct = (input_tokens / total) * 100.0
+                _update_context_display(task_id, mode, pct, input_tokens, total)
+                if pct >= 65:
+                    clf.write(f"  ⚠  [{ts}] CONTEXT {pct:.1f}% ({input_tokens:,} tokens) — APPROACHING LIMIT\n")
                     clf.flush()
-                elif pct_f >= 50:
-                    clf.write(f"  ◉  [{ts}] Context {pct_f:.1f}%\n")
+                elif pct >= 50:
+                    clf.write(f"  ◉  [{ts}] Context {pct:.1f}% ({input_tokens:,} tokens)\n")
                     clf.flush()
             except (ValueError, TypeError):
                 pass
 
-    if etype == "environment_details":
-        _try_extract_context(event)
-        return  # don't write environment_details verbatim to cline.log
+        elif itype == "content_end":
+            token_buf.clear()
+            text = inner.get("text", "").strip()
+            if text:
+                emit_iter_header_if_pending()
+                clf.write(f"  {text}\n")
+                clf.flush()
 
-    if etype == "agent_event":
-        inner = event.get("event", {})
-        _try_extract_context(inner)
-        itype = inner.get("type", "")
-
-        if itype == "content_start":
+        elif itype == "content_start":
             token = inner.get("text", "")
             token_buf.append(token)
-            joined = "".join(token_buf)
-            if len(joined) > 120 or joined.endswith(("\n", ". ", "! ", "? ")):
-                flush_tokens()
 
-        elif itype in ("content_block_stop", "message_stop"):
+        elif itype == "iteration_start":
+            token_buf.clear()
+            token_buf.append(f"\x00ITER\x00{ts}\x00{inner.get('iteration', '?')}")
+
+        elif itype in ("content_block_stop", "message_stop", "iteration_end"):
             flush_tokens()
 
         elif itype == "tool_use":
             flush_tokens()
+            emit_iter_header_if_pending()
             name   = inner.get("name", inner.get("tool", "?"))
             params = inner.get("input", inner.get("params", {}))
             hint = ""
             for key in ("path", "command", "query", "url", "description", "content"):
                 if key in params:
-                    val = str(params[key])[:80]
+                    val  = str(params[key])[:80]
                     hint = f" {key}={val!r}"
                     break
             clf.write(f"\n  ▶ {ts} {name}{hint}\n")
@@ -1279,6 +1762,9 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
             flush_tokens()
             clf.write(f"\n  ── {ts} message ──\n")
             clf.flush()
+
+    elif etype == "hook_event":
+        pass  # agent lifecycle events — not useful in cline.log
 
     elif etype in ("system", "info"):
         flush_tokens()
@@ -1315,12 +1801,14 @@ def run_cline(
     Cline output is parsed and written to CLINE_LOG_FILE in human-readable form.
     Monitor live with: tail -f forge/cline.log
     """
-    cmd = build_cline_cmd(prompt, plan_mode, cwd, model_id=model_id)
+    cmd        = build_cline_cmd(prompt, plan_mode, cwd, model_id=model_id)
     mode_label = "PLAN" if plan_mode else "ACT"
     model_label = model_id or "default"
     log(f"[{task_id}] Running Cline {mode_label} mode — model: {model_label} "
         f"(timeout {CLINE_TIMEOUT}s, attempt {attempt_number})")
     log(f"[{task_id}] Cline output → {CLINE_LOG_FILE}")
+
+    full_output = ""
 
     for attempt in range(1, CLINE_RETRIES + 1):
         if attempt > 1:
@@ -1334,8 +1822,8 @@ def run_cline(
 
         text_output: list[str] = []
         token_buf:   list[str] = []
+        exit_code = -1
 
-        # Session header — also reset context.log for the new session
         with open(CLINE_LOG_FILE, "a") as clf:
             clf.write(
                 f"\n{'─'*60}\n"
@@ -1358,24 +1846,32 @@ def run_cline(
                     raw = line.rstrip()
                     try:
                         event = json.loads(raw)
-                        # Write human-readable form to cline.log
                         _write_cline_log(clf, event, token_buf,
                                          task_id=task_id, mode=mode_label)
-                        # Extract text for internal use (Discord reports etc.)
-                        if event.get("type") == "agent_event":
+                        etype = event.get("type", "")
+                        if etype == "agent_event":
                             inner = event.get("event", {})
-                            if inner.get("type") == "content_start":
-                                text_output.append(inner.get("text", ""))
-                        elif event.get("type") == "text":
+                            itype = inner.get("type", "")
+                            if itype == "content_end":
+                                text = inner.get("text", "")
+                                if text:
+                                    text_output.append(text)
+                        elif etype == "text":
                             text_output.append(event.get("text", ""))
+                        elif etype in ("message", "completion"):
+                            content = event.get("content", event.get("text", ""))
+                            if isinstance(content, str) and content:
+                                text_output.append(content)
+                            elif isinstance(content, list):
+                                for block in content:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        text_output.append(block.get("text", ""))
                     except json.JSONDecodeError:
-                        # Plain text — write as-is
                         if raw:
                             clf.write(f"{raw}\n")
                             clf.flush()
                             text_output.append(raw)
 
-                # Flush any remaining tokens at end of stream
                 if token_buf:
                     clf.write("  " + "".join(token_buf).strip() + "\n")
                     clf.flush()
@@ -1408,49 +1904,106 @@ def run_cline(
 
 # ─── Task prompt builders ─────────────────────────────────────────────────────
 
-def build_task_prompt(task: dict) -> str:
-    """Build the prompt injected into Cline for the plan phase."""
-    tid = task["id"]
-    desc = task["description"]
-    context = task.get("context", "")
-    phase = task.get("phase", "1")
+def build_task_prompt(task: dict, feedback: str = "") -> str:
+    """
+    Build the prompt injected into Cline for the PLAN session.
 
-    prompt = f"SindriStudio Task: {tid}\nDescription: {desc}\nPhase: {phase}\n\n"
+    Paths must match .clinerules sections 11.1 and 11.2 exactly.
+    The feedback parameter carries rejection notes from a prior plan attempt.
+    """
+    tid     = task["id"]
+    desc    = task["description"]
+    context = task.get("context", "")
+    phase   = task.get("phase", "1")
+    project = task["project"]
+
+    prompt = (
+        f"SindriStudio Task: {tid}\n"
+        f"Description: {desc}\n"
+        f"Phase: {phase}\n"
+        f"Project: {project}\n\n"
+    )
 
     if context:
         prompt += f"Context:\n{context}\n\n"
 
+    if feedback:
+        prompt += f"Revision feedback from project owner:\n{feedback}\n\n"
+
+    phase_padded = phase.zfill(3)
     prompt += (
-        f"Instructions:\n"
-        f"1. Read .cline/state/CURRENT_TASK.md first\n"
-        f"2. Read docs/ENVIRONMENT.md and docs/ARCHITECTURE.md\n"
-        f"3. Read docs/TASKS_PHASE{phase}.md and find task {tid}\n"
-        f"4. Execute STEP 1 — PLAN only:\n"
-        f"   - Write .cline/reports/{tid}.md plan section\n"
-        f"   - Update .cline/state/CURRENT_TASK.md Step = 1-PLAN Status = COMPLETE\n"
-        f"   - Do NOT write any application or test code\n"
-        f"5. After the plan is written: STOP. Do not proceed to STEP 2.\n"
-        f"   The Forge orchestrator will resume this session after plan approval.\n"
+        f"Instructions — PLAN SESSION ONLY:\n"
+        f"1. Read .forge/state/CURRENT_TASK.md and verify Task field matches {tid}.\n"
+        f"   If it does not match: write a one-line error to\n"
+        f"   .forge/reports/{tid}_plan.md and STOP immediately.\n"
+        f"2. Read docs/ENVIRONMENT.md, docs/ARCHITECTURE.md, and\n"
+        f"   docs/TASKS_PHASE{phase_padded}.md.\n"
+        f"3. Write the plan report to .forge/reports/{tid}_plan.md.\n"
+        f"   Use the exact section structure from .clinerules section 3.\n"
+        f"   Write ONLY the plan report. No source code, no test files,\n"
+        f"   no build commands.\n"
+        f"4. Update .forge/state/CURRENT_TASK.md:\n"
+        f"     Task: {tid}\n"
+        f"     Step: PLAN\n"
+        f"     Status: COMPLETE\n"
+        f"     Updated: <ISO 8601 UTC timestamp>\n"
+        f"5. STOP. Do not proceed to implementation.\n"
+        f"   The Forge orchestrator handles approval and will resume in a new session.\n"
     )
     return prompt
 
 def build_act_prompt(task: dict, approved_plan: str) -> str:
-    """Build the Act phase prompt with the approved plan injected."""
-    tid = task["id"]
-    desc = task["description"]
-    phase = task.get("phase", "1")
+    """
+    Build the prompt injected into Cline for the ACT (implementation) session.
+
+    The approved plan is injected verbatim — Cline must implement strictly to it.
+    Paths must match .clinerules sections 11.1 and 11.2.
+    """
+    tid     = task["id"]
+    desc    = task["description"]
+    phase   = task.get("phase", "1")
+    project = task["project"]
 
     return (
-        f"SindriStudio Task: {tid}\nDescription: {desc}\nPhase: {phase}\n\n"
+        f"SindriStudio Task: {tid}\n"
+        f"Description: {desc}\n"
+        f"Phase: {phase}\n"
+        f"Project: {project}\n\n"
         f"The plan below has been APPROVED by the project owner.\n"
-        f"Proceed directly to STEP 2 — IMPLEMENT. Do not re-plan.\n\n"
+        f"Proceed directly to implementation. Do not re-plan.\n\n"
         f"APPROVED PLAN:\n{approved_plan}\n\n"
-        f"Instructions:\n"
-        f"1. STEP 2 — IMPLEMENT: Write all code and tests as specified in the plan\n"
-        f"2. STEP 3 — TEST: Run all tests, fix any failures, zero failures required\n"
-        f"3. STEP 4 — COMMIT: git commit + push, finalize .cline/reports/{tid}.md,\n"
-        f"   update .cline/state/CURRENT_TASK.md, call new_task, STOP\n"
+        f"Instructions — ACT SESSION:\n"
+        f"1. IMPLEMENT: Write all source code, tests, and CI changes as specified\n"
+        f"   in the approved plan. Scope is strictly limited to the plan's\n"
+        f"   'In Scope' section. Do not add anything not listed there.\n"
+        f"2. TEST: Run the full test suite for every affected crate/package.\n"
+        f"   Fix all failures. Zero failures required before proceeding.\n"
+        f"   Run the full workspace suite and fix any regressions.\n"
+        f"3. STAGE: Run git add -A inside the project repo ({project}).\n"
+        f"   Do NOT run git commit or git push — The Forge commits and pushes.\n"
+        f"   Do NOT make any git operations outside the {project} repo.\n"
+        f"4. REPORT: Write .forge/reports/{tid}_implement.md using the exact\n"
+        f"   section structure from .clinerules section 4. Include verbatim\n"
+        f"   test output. Write this ONLY after all tests pass and files are staged.\n"
+        f"5. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
+        f"     Task: {tid}\n"
+        f"     Step: IMPLEMENT\n"
+        f"     Status: COMPLETE\n"
+        f"     Updated: <ISO 8601 UTC timestamp>\n"
+        f"6. STOP. The Forge will commit, seek push approval, and push.\n"
     )
+
+def _fmt_duration(seconds: float) -> str:
+    """Format a duration into XXs, XXm:YYs, or XXh:YYm:ZZs."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m:{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h:{m:02d}m:{s:02d}s"
+
 
 # ─── Task execution ───────────────────────────────────────────────────────────
 
@@ -1463,17 +2016,56 @@ def execute_task(
     dry_run: bool = False,
 ) -> bool:
     """
-    Execute one atomic task through the full plan→approve→act→approve cycle.
+    Execute one atomic task through the full plan→approve→act→commit→push cycle.
 
     Channel responsibilities:
-      reports_channel_id   (#forge-reports)   — post plan report, post impl report. NEVER polled.
-      approvals_channel_id (#forge-approvals) — post approval requests, poll reactions, send alerts.
+      reports_channel_id   (#forge-reports)   — post plan/impl reports as PDF. NEVER polled.
+      approvals_channel_id (#forge-approvals) — approval requests, polled for reactions.
+
+    Each task targets exactly one project (task["project"]).  The Forge resolves
+    the project path from repos.json, verifies the branch, runs Cline in that
+    repo's working directory, and writes reports into that repo's .forge/reports/.
 
     Returns True if task completed successfully.
     """
-    tid = task["id"]
+    tid     = task["id"]
+    project = task["project"]
+    try:
+        repo_path = resolve_project_path(project)
+    except KeyError as e:
+        log_err(f"[{tid}] {e}")
+        state["failed"].append(tid)
+        save_state(state)
+        return False
+
     log(f"{'='*60}")
     log(f"[{tid}] Starting task: {task['description']}")
+    log(f"[{tid}] Project: {project} → {repo_path}")
+
+    # ── Branch guard: ensure repo is on the configured branch ────────────────
+    if not dry_run:
+        branch_ok = ensure_on_branch(project)
+        if not branch_ok:
+            msg = (f"❌ `{tid}` Branch switch failed for {project}. "
+                   f"Check forge.log and switch manually.")
+            log_err(msg)
+            if dc and approvals_channel_id:
+                dc.send_message(approvals_channel_id, msg)
+            state["failed"].append(tid)
+            save_state(state)
+            return False
+
+    # Ensure .forge/ dirs exist in the target repo before anything is written
+    ensure_repo_forge_dirs(project)
+
+    # ── Always announce task start to #forge-reports ─────────────────────────
+    if dc and reports_channel_id:
+        prereqs = ", ".join(task.get("prereqs", [])) or "none"
+        dc.send_message(
+            reports_channel_id,
+            f"⚙️ **Task `{tid}` STARTED** — {task['description']}\n"
+            f"Phase {task.get('phase', '?')} · Project: `{project}` · Prereqs: `{prereqs}`"
+        )
 
     # ── State: mark in progress ──────────────────────────────────────────────
     if state.get("in_progress") != tid:
@@ -1486,18 +2078,13 @@ def execute_task(
         state["impl_report_message_id"] = None
         save_state(state)
 
-        # Notify reports channel that a new task is starting
-        if dc and reports_channel_id and not dry_run:
-            prereqs = ", ".join(task.get("prereqs", [])) or "none"
-            dc.send_message(
-                reports_channel_id,
-                f"⚙️ **Task `{tid}` STARTED** — {task['description']}\n"
-                f"Phase {task.get('phase', '?')} · Prereqs: `{prereqs}`"
-            )
-
     # ── Phase 1: Plan ────────────────────────────────────────────────────────
     plan_attempt = 1
-    feedback = ""
+    feedback     = ""
+    t_plan_start = 0.0  # set when Cline PLAN runs; 0 if plan was already approved on resume
+    t_plan_end   = 0.0
+    t_act_start  = 0.0  # set when Cline ACT runs
+    t_act_end    = 0.0
 
     while True:
         if state.get("plan_approved") and state.get("current_plan"):
@@ -1506,16 +2093,19 @@ def execute_task(
 
         log(f"[{tid}] 📋 Plan phase (attempt {plan_attempt})")
 
-        prompt = build_task_prompt(task)
-        if feedback:
-            prompt += f"\n\nREVISION FEEDBACK from project owner:\n{feedback}\n\nRevise your plan accordingly."
+        prompt = build_task_prompt(task, feedback=feedback)
 
+        # Write CURRENT_TASK.md so Cline's §1 identity check passes
+        if not dry_run:
+            write_current_task_file(task, step="PLAN", status="IN_PROGRESS")
+
+        t_plan_start = time.monotonic()
         if dry_run:
             log(f"[{tid}] [DRY RUN] Would run Cline PLAN mode ({MODEL_PLANNING})")
             plan_text = f"[DRY RUN] Plan for {tid}"
         else:
             success, output = run_cline(
-                prompt, plan_mode=True, cwd=REPO_ROOT,
+                prompt, plan_mode=True, cwd=repo_path,
                 task_id=tid, dc=dc,
                 approvals_channel_id=approvals_channel_id,
                 attempt_number=plan_attempt,
@@ -1531,47 +2121,75 @@ def execute_task(
                 save_state(state)
                 return False
 
-            # Read the plan from the report file Cline wrote (the authoritative source)
-            report_text = read_report_file(tid)
-            plan_text = extract_plan_section(report_text, tid)
+            report_text = read_plan_report(task)
+            plan_text   = extract_plan_section(report_text, tid)
 
-            # Ensure the report file exists on disk (write if Cline didn't)
+            if not report_text or plan_text.startswith("[Plan report not yet written"):
+                if output.strip():
+                    plan_text = output.strip()
+                    log(f"[{tid}] Plan report file absent — using stdout-captured plan text")
+                else:
+                    log_warn(f"[{tid}] No plan text found in report file or stdout")
+                    plan_text = (
+                        f"# Plan Report: {tid}\n\n"
+                        f"| Field | Value |\n|-------|-------|\n"
+                        f"| Task ID | {tid} |\n"
+                        f"| Description | {task['description']} |\n\n"
+                        f"## Plan\n\n"
+                        f"*Cline did not produce a readable plan. "
+                        f"Review forge/cline.log for session output.*\n"
+                    )
+
             write_forge_plan_report(task, plan_text, plan_attempt)
 
+        t_plan_end = time.monotonic()  # approval wait NOT included
         state["current_plan"] = plan_text
         save_state(state)
 
-        # Read full report once — sent as attachment to #forge-reports
-        full_report = read_report_file(tid)
+        full_report = read_plan_report(task) or plan_text
 
-        # ── Post plan report to #forge-reports as .md attachment ────────────
-        if dc and reports_channel_id and not dry_run:
-            caption = format_report_caption(task, "PLAN")
-            filename = f"{tid}-plan.md"
-            report_msg_id = dc.send_file(
-                reports_channel_id, caption, filename,
-                full_report or plan_text
-            )
-            if report_msg_id:
-                state["plan_report_message_id"] = report_msg_id
-                save_state(state)
-                log(f"[{tid}] Plan report attached to #forge-reports (msg {report_msg_id})")
+        # ── Post plan report to #forge-reports as PDF attachment ─────────────
+        if dc and reports_channel_id:
+            if dry_run:
+                dry_run_report_msg_id = dc.send_message(
+                    reports_channel_id,
+                    f"📋 **[DRY RUN] PLAN REPORT — `{tid}` (Phase {task.get('phase', '?')})**\n"
+                    f"_{task['description']}_\n"
+                    f"_No PDF generated in dry-run mode. Approval request in #forge-approvals._"
+                )
+                if dry_run_report_msg_id:
+                    state["plan_report_message_id"] = dry_run_report_msg_id
+                    save_state(state)
+            else:
+                caption      = format_report_caption(task, "PLAN")
+                filename     = f"{tid}_plan.md"
+                report_msg_id = dc.send_file(
+                    reports_channel_id, caption, filename, full_report
+                )
+                if report_msg_id:
+                    state["plan_report_message_id"] = report_msg_id
+                    save_state(state)
+                    log(f"[{tid}] Plan report attached to #forge-reports (msg {report_msg_id})")
 
-        # ── Post approval request to #forge-approvals (polled for reactions) ─
+        # ── Post approval request to #forge-approvals ─────────────────────────
         if dc and approvals_channel_id:
-            approval_text = format_plan_approval_request(task, plan_attempt, feedback)
+            approval_text   = format_plan_approval_request(task, plan_attempt, feedback)
             approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
             if approval_msg_id:
-                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)  # ✅
+                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
                 time.sleep(0.75)
-                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)   # ❌
+                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)
                 state["plan_approval_message_id"] = approval_msg_id
                 save_state(state)
                 log(f"[{tid}] Plan approval request posted to #forge-approvals (msg {approval_msg_id})")
 
                 if dry_run:
-                    log(f"[{tid}] [DRY RUN] Skipping approval wait")
-                    approved, feedback = True, ""
+                    log(f"[{tid}] [DRY RUN] Waiting for real approval in #forge-approvals...")
+                    approved, feedback = wait_for_approval(
+                        dc, approvals_channel_id, approval_msg_id,
+                        reports_channel_id=reports_channel_id,
+                        report_message_id=state.get("plan_report_message_id"),
+                    )
                 else:
                     approved, feedback = wait_for_approval(
                         dc, approvals_channel_id, approval_msg_id,
@@ -1589,27 +2207,15 @@ def execute_task(
             state["plan_approved"] = True
             save_state(state)
             log(f"[{tid}] ✅ Plan approved")
-
-            # ── Snapshot approved plan before act phase ──────────────────────
-            # Cline will overwrite .cline/reports/{tid}.md during STEP 4.
-            # Save the full approved plan report now so the implementation PDF
-            # can include it as a permanent record of decisions made.
-            snapshot_path = REPO_ROOT / ".cline" / "reports" / f"{tid}-plan-snapshot.md"
-            try:
-                snapshot_content = read_report_file(tid) or plan_text
-                snapshot_path.write_text(snapshot_content)
-                log(f"[{tid}] Plan snapshot saved to {snapshot_path.name}")
-            except Exception as e:
-                log_warn(f"[{tid}] Could not save plan snapshot: {e}")
             break
         else:
             log(f"[{tid}] ❌ Plan rejected — feedback: {feedback!r}")
             plan_attempt += 1
             state["plan_approved"] = False
-            state["current_plan"] = None
+            state["current_plan"]  = None
             save_state(state)
             if plan_attempt > 5:
-                msg = f"❌ `{tid}` Plan rejected {plan_attempt-1} times without approval. Stopping."
+                msg = f"❌ `{tid}` Plan rejected {plan_attempt-1} times. Stopping."
                 log_err(msg)
                 if dc and approvals_channel_id:
                     dc.send_message(approvals_channel_id, msg)
@@ -1621,17 +2227,23 @@ def execute_task(
     # ── Phase 2: Act ─────────────────────────────────────────────────────────
     log(f"[{tid}] ⚙️  Act phase — model: {MODEL_CODING}")
 
+    # Write CURRENT_TASK.md so Cline's §1 identity check passes
+    if not dry_run:
+        write_current_task_file(task, step="IMPLEMENT", status="IN_PROGRESS")
+
+    t_act_start = time.monotonic()
     if dry_run:
         log(f"[{tid}] [DRY RUN] Would run Cline ACT mode ({MODEL_CODING})")
         act_success = True
     else:
-        act_prompt = build_act_prompt(task, state["current_plan"])
+        act_prompt  = build_act_prompt(task, state["current_plan"])
         act_success, _ = run_cline(
-            act_prompt, plan_mode=False, cwd=REPO_ROOT,
+            act_prompt, plan_mode=False, cwd=repo_path,
             task_id=tid, dc=dc,
             approvals_channel_id=approvals_channel_id,
             model_id=MODEL_CODING,
         )
+    t_act_end = time.monotonic()  # push approval wait NOT included
 
     if not act_success:
         msg = f"❌ `{tid}` Cline ACT failed after {CLINE_RETRIES} attempts. Task marked failed."
@@ -1643,45 +2255,80 @@ def execute_task(
         save_state(state)
         return False
 
-    # ── Collect git commit info ───────────────────────────────────────────────
-    # Cline has committed locally but not pushed — collect what's staged locally.
-    commit_info = collect_commit_info(task)
-
-    # Read the finalized implementation report (Cline writes this in STEP 4)
-    impl_report_text = read_report_file(tid)
-
-    # Merge the saved plan snapshot into the implementation report so the PDF
-    # is a complete record: approved plan decisions + implementation + test results.
-    snapshot_path = REPO_ROOT / ".cline" / "reports" / f"{tid}-plan-snapshot.md"
-    if snapshot_path.exists():
-        plan_snapshot = snapshot_path.read_text()
-        full_report_text = (
-            f"{impl_report_text or ''}\n\n"
-            f"---\n\n"
-            f"# Approved Plan (recorded at approval)\n\n"
-            f"{plan_snapshot}"
-        )
-        log(f"[{tid}] Merged plan snapshot into implementation report")
+    # ── Forge commits the project repo ────────────────────────────────────────
+    if dry_run:
+        log(f"[{tid}] [DRY RUN] Skipping git commit")
     else:
-        log_warn(f"[{tid}] Plan snapshot not found — implementation report will not include plan")
-        full_report_text = impl_report_text or f"# {tid}\nReport not found."
+        log(f"[{tid}] Committing {project} repo...")
+        commit_hash = _forge_commit(task)
+        if not commit_hash:
+            log_warn(f"[{tid}] Nothing committed in {project} — may be expected if Cline "
+                     f"found no changes, or check .forge/cline.log for issues.")
+
+    # ── Validate commit message format ────────────────────────────────────────
+    if not dry_run:
+        commit_warnings = validate_commit_messages(task)
+        if commit_warnings:
+            warn_text = "\n".join(f"  • {w}" for w in commit_warnings)
+            msg = (
+                f"⚠️ `{tid}` Commit message issues:\n{warn_text}\n\n"
+                f"Review before approving push. The Forge will proceed if you approve."
+            )
+            log_warn(f"[{tid}] Commit warnings:\n{warn_text}")
+            if dc and approvals_channel_id:
+                dc.send_message(approvals_channel_id, msg)
+
+    # ── Collect commit info for approval message ──────────────────────────────
+    commit_info = collect_commit_info(task) if not dry_run else {}
+
+    # ── Read implementation report and merge with plan report for PDF ─────────
+    impl_report_text = read_implement_report(task)
+    if not impl_report_text:
+        log_warn(f"[{tid}] Implementation report not found at "
+                 f"{implement_report_path(task).relative_to(repo_path)}")
+        impl_report_text = (
+            f"# Implementation Report: {tid}\n\n"
+            f"*Cline did not write the implementation report. "
+            f"Review forge/cline.log for session output.*\n"
+        )
+
+    plan_report_text = read_plan_report(task)
+    if plan_report_text:
+        full_report_text = (
+            f"{impl_report_text}\n\n---\n\n"
+            f"# Approved Plan (for reference)\n\n{plan_report_text}"
+        )
+        log(f"[{tid}] Merged plan report into implementation PDF")
+    else:
+        log_warn(f"[{tid}] Plan report missing — PDF will not include it")
+        full_report_text = impl_report_text
 
     # ── Post implementation report to #forge-reports as PDF attachment ────────
-    if dc and reports_channel_id and not dry_run:
-        caption = format_implementation_caption(task, commit_info)
-        filename = f"{tid}-implementation.md"
-        impl_msg_id = dc.send_file(
-            reports_channel_id, caption, filename,
-            full_report_text
-        )
-        if impl_msg_id:
-            state["impl_report_message_id"] = impl_msg_id
-            save_state(state)
-            log(f"[{tid}] Implementation report attached to #forge-reports (msg {impl_msg_id})")
+    if dc and reports_channel_id:
+        if dry_run:
+            dry_run_impl_msg_id = dc.send_message(
+                reports_channel_id,
+                f"📦 **[DRY RUN] IMPLEMENTATION REPORT — `{tid}` (Phase {task.get('phase', '?')})**\n"
+                f"_{task['description']}_\n"
+                f"_No PDF generated in dry-run mode. Push approval request in #forge-approvals._"
+            )
+            if dry_run_impl_msg_id:
+                state["impl_report_message_id"] = dry_run_impl_msg_id
+                save_state(state)
+        else:
+            caption     = format_implementation_caption(task, commit_info)
+            filename    = f"{tid}_implement.md"
+            impl_msg_id = dc.send_file(
+                reports_channel_id, caption, filename, full_report_text
+            )
+            if impl_msg_id:
+                state["impl_report_message_id"] = impl_msg_id
+                save_state(state)
+                log(f"[{tid}] Implementation report attached to #forge-reports (msg {impl_msg_id})")
 
     # ── Post push approval request to #forge-approvals (polled) ──────────────
     if dc and approvals_channel_id:
-        approval_text = format_push_approval_request(task, commit_info)
+        approval_text   = format_push_approval_request(task, commit_info)
         approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
         if approval_msg_id:
             dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
@@ -1692,25 +2339,22 @@ def execute_task(
             log(f"[{tid}] Push approval request posted to #forge-approvals (msg {approval_msg_id})")
 
             if dry_run:
-                log(f"[{tid}] [DRY RUN] Skipping push approval wait")
-                push_approved, push_feedback = True, ""
-            else:
-                push_approved, push_feedback = wait_for_approval(
-                    dc, approvals_channel_id, approval_msg_id,
-                    reports_channel_id=reports_channel_id,
-                    report_message_id=state.get("impl_report_message_id"),
-                )
+                log(f"[{tid}] [DRY RUN] Waiting for real push approval in #forge-approvals...")
+            push_approved, push_feedback = wait_for_approval(
+                dc, approvals_channel_id, approval_msg_id,
+                reports_channel_id=reports_channel_id,
+                report_message_id=state.get("impl_report_message_id"),
+            )
         else:
-            log_warn(f"[{tid}] Failed to post push approval to #forge-approvals — auto-approving")
+            log_warn(f"[{tid}] Failed to post push approval — auto-approving")
             push_approved, push_feedback = True, ""
     else:
         log_warn(f"[{tid}] Discord not configured — auto-approving push")
         push_approved, push_feedback = True, ""
 
     if not push_approved:
-        # Commits are local only — safe to mark needs-review without any push
         msg = (f"🔍 `{tid}` Push rejected (feedback: {push_feedback!r}). "
-               f"Commits are local only. Task marked needs-review.")
+               f"Commit is local. Task marked needs-review.")
         log_warn(msg)
         if dc and approvals_channel_id:
             dc.send_message(approvals_channel_id, msg)
@@ -1719,14 +2363,17 @@ def execute_task(
         save_state(state)
         return False
 
-    log(f"[{tid}] ✅ Push approved — pushing submodules then root")
+    log(f"[{tid}] ✅ Push approved — pushing {project}")
 
-    # ── Push submodule repos (Cline committed locally, Forge pushes) ──────────
-    push_ok = _forge_push_repos(task)
+    # ── Forge pushes the project repo ─────────────────────────────────────────
+    if dry_run:
+        log(f"[{tid}] [DRY RUN] Skipping git push")
+        push_ok = True
+    else:
+        push_ok = _forge_push(task)
     if not push_ok:
-        msg = (f"⚠️ `{tid}` Submodule push failed. "
-               f"Commits are local. Check git status manually, then use "
-               f"`--reset-task` or push manually and `--complete`.")
+        msg = (f"⚠️ `{tid}` Push to {project} failed. "
+               f"Commit is local. Use --reset-task or push manually.")
         log_err(msg)
         if dc and approvals_channel_id:
             dc.send_message(approvals_channel_id, msg)
@@ -1734,19 +2381,6 @@ def execute_task(
         state["in_progress"] = None
         save_state(state)
         return False
-
-    # ── Commit and push root repo (submodule pointers + reports + state) ─────
-    root_commit_hash = _forge_commit_root(tid, task["description"])
-    if root_commit_hash:
-        log(f"[{tid}] Root repo committed and pushed: {root_commit_hash}")
-    else:
-        log_warn(f"[{tid}] Root repo commit failed or had nothing to commit — check manually")
-        if dc and approvals_channel_id:
-            dc.send_message(
-                approvals_channel_id,
-                f"⚠️ `{tid}` Root repo commit/push failed. "
-                f"Submodule refs and reports may not be on origin. Check manually."
-            )
 
     # ── Mark complete ────────────────────────────────────────────────────────
     state["completed"].append(tid)
@@ -1759,8 +2393,6 @@ def execute_task(
     state["impl_report_message_id"] = None
     save_state(state)
 
-    # Purge cline.log and context.log now that the task is complete.
-    # forge.log is retained (permanent orchestration record).
     for log_file in (CLINE_LOG_FILE, CONTEXT_LOG_FILE):
         try:
             log_file.write_text("")
@@ -1768,45 +2400,111 @@ def execute_task(
             log_warn(f"[{tid}] Could not purge {log_file.name}: {e}")
 
     if dc and reports_channel_id:
+        plan_dur = _fmt_duration(t_plan_end - t_plan_start)
+        act_dur  = _fmt_duration(t_act_end  - t_act_start)
         dc.send_message(
             reports_channel_id,
-            f"✅ **Task `{tid}` COMPLETE** — {task['description']}"
+            f"✅ **Task `{tid}` COMPLETE** — {task['description']}\n"
+            f"⏱ Planning: `{plan_dur}` · Implementation: `{act_dur}` _(approval wait excluded)_"
         )
 
     log(f"[{tid}] ✅ Task complete")
     return True
 
-# ─── Main loop ────────────────────────────────────────────────────────────────
+# ─── Main ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SindriStudio Forge Orchestrator")
-    parser.add_argument("--task", help="Force-start a specific task ID")
-    parser.add_argument("--dry-run", action="store_true", help="Show plan only, no execution")
-    parser.add_argument("--list", action="store_true", help="Show DAG status and exit")
-    parser.add_argument("--reset-task", metavar="TASK_ID",
-                        help="Reset a task to unstarted (does NOT revert git)")
-    parser.add_argument("--reset-task-git", metavar="TASK_ID",
-                        help="Reset task to unstarted AND hard-reset repos to origin/develop")
+    parser.add_argument(
+        "--repo", metavar="PROJECT", required=True,
+        help="Repository to operate on (must match a key in repos.json, e.g. 'anvilml'). "
+             "Required — The Forge always works on exactly one repository at a time.",
+    )
+    parser.add_argument(
+        "--task", metavar="TASK_ID",
+        help="Run exactly ONE specific task (full cycle + gates), then exit. "
+             "Useful for testing The Forge itself.",
+    )
+    parser.add_argument(
+        "--phase", type=int, metavar="N",
+        help="Load task files for phase N and all prior phases only. "
+             "If omitted, all phase files from the target repository are loaded.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would run without executing Cline or waiting for approvals.",
+    )
+    parser.add_argument(
+        "--list", action="store_true",
+        help="Print the task DAG with current status, then exit.",
+    )
+    parser.add_argument(
+        "--reset-task", metavar="TASK_ID",
+        help="Reset a task to unstarted in state.json. Does NOT revert git.",
+    )
+    parser.add_argument(
+        "--reset-task-git", metavar="TASK_ID",
+        help="Reset task to unstarted AND hard-reset repo to origin/<branch>.",
+    )
     args = parser.parse_args()
 
     log("=" * 60)
     log("Forge starting up")
 
+    # ── Load and validate repository registry ────────────────────────────────
+    global REPOS
+    REPOS = load_repos()
+    for name, cfg in REPOS.items():
+        log(f"  {name}: path={cfg['path']}  branch={cfg['branch']}  "
+            f"github={cfg['github_url'] or '(not set)'}")
+
     if not DISCORD_BOT_TOKEN:
         log_warn("FORGE_DISCORD_TOKEN not set — running without Discord notifications")
     if not DISCORD_GUILD_ID:
-        log_warn("FORGE_DISCORD_GUILD_ID not set — Discord channel lookup will fail")
+        log_warn("FORGE_DISCORD_GUILD_ID not set — Discord channel lookup disabled")
 
-    tasks = load_tasks()
+    # ── Validate --repo against loaded registry ───────────────────────────────
+    if args.repo not in REPOS:
+        registered = ", ".join(sorted(REPOS.keys())) or "(none)"
+        log_err(f"--repo {args.repo!r} is not registered in repos.json. "
+                f"Registered: {registered}")
+        sys.exit(1)
+    log(f"Operating on repository: {args.repo} → {REPOS[args.repo]['path']}")
+
+    # ── Scope state.json to the active repository's .forge/ directory ─────────
+    # Each repository manages its own Forge state independently.
+    # <repo>/.forge/state.json is created on first run; ensure the dir exists.
+    global STATE_FILE
+    ensure_repo_forge_dirs(args.repo)
+    STATE_FILE = repo_state_dir(args.repo) / "state.json"
+    log(f"State file: {STATE_FILE}")
+
+    # ── Load tasks scoped to the single target repository ─────────────────────
+    # repos.json may list many repositories; The Forge always works on exactly one.
+    tasks = load_tasks(project=args.repo, phase=args.phase)
     state = load_state()
+
+    # ── Validate all tasks against schema ─────────────────────────────────────
+    schema_errors = []
+    for t in tasks:
+        errs = validate_task_schema(t)
+        if errs:
+            for e in errs:
+                schema_errors.append(f"  {t.get('id', '?')}: {e}")
+    if schema_errors:
+        log_err("Task schema errors — fix before running:")
+        for e in schema_errors:
+            log_err(e)
+        sys.exit(1)
+    log(f"Loaded {len(tasks)} tasks — schema OK")
 
     if args.list:
         print_dag_status(tasks, state)
         return
 
     if args.reset_task or args.reset_task_git:
-        tid = args.reset_task or args.reset_task_git
-        dag = build_dag(tasks)
+        tid  = args.reset_task or args.reset_task_git
+        dag  = build_dag(tasks)
         task = dag.get(tid)
 
         for lst in ["completed", "failed", "needs_review"]:
@@ -1820,15 +2518,16 @@ def main() -> None:
         log(f"Task {tid} reset to unstarted in state.json")
 
         if args.reset_task_git and task:
-            log(f"Reverting repos for {tid} to origin/develop...")
-            ok = revert_task_repos(task)
+            branch = resolve_project_branch(task["project"])
+            log(f"Reverting {task['project']} repo for {tid} to origin/{branch}...")
+            ok = revert_task_repo(task)
             if ok:
-                log(f"✅ Repos reverted successfully")
+                log("✅ Repo reverted successfully")
             else:
-                log_err(f"⚠️  Some repos could not be reverted — check manually")
+                log_err("⚠️  Repo could not be reverted — check manually")
         return
 
-    # Set up Discord — channel IDs are hardcoded, only token needed from env
+    # Set up Discord
     dc = get_discord()
     reports_channel_id   = DISCORD_REPORTS_CHANNEL_ID
     approvals_channel_id = DISCORD_APPROVALS_CHANNEL_ID
@@ -1837,34 +2536,34 @@ def main() -> None:
         log(f"Discord approvals channel (polled):   {approvals_channel_id}")
         log(f"Discord owner gate:                   {FORGE_OWNER_ID}")
 
-    # If --task specified, force that task as in_progress
-    if args.task:
-        dag = build_dag(tasks)
-        task = dag.get(args.task)
-        if not task:
-            log_err(f"Task {args.task} not found in tasks.json")
-            sys.exit(1)
-        state["in_progress"] = args.task
-        state["plan_approved"] = False
-        state["current_plan"] = None
-        save_state(state)
-
-    # Main loop
+    # ── Main loop ─────────────────────────────────────────────────────────────
     while True:
-        tasks = load_tasks()  # Reload each iteration — allows hot-editing tasks.json
+        tasks = load_tasks(project=args.repo, phase=args.phase)  # Reload — allows hot-editing task files
         state = load_state()
 
-        task = find_next_task(tasks, state)
+        # ── Resolve the task to execute ───────────────────────────────────────
+        # --task pins a specific task for the entire run.  We bypass
+        # find_next_task to avoid state.json's completed list causing the wrong
+        # task to be selected (e.g. if P1-A1 is already completed, find_next_task
+        # would skip it and return P2-A1 instead).
+        if args.task:
+            dag  = build_dag(tasks)
+            task = dag.get(args.task)
+            if not task:
+                log_err(f"Task {args.task} not found in loaded task files")
+                sys.exit(1)
+        else:
+            task = find_next_task(tasks, state)
 
         if task is None:
-            all_ids = {t["id"] for t in tasks}
-            completed = set(state["completed"])
-            failed = set(state["failed"])
+            all_ids      = {t["id"] for t in tasks}
+            completed    = set(state["completed"])
+            failed       = set(state["failed"])
             needs_review = set(state.get("needs_review", []))
-            remaining = all_ids - completed - failed - needs_review
+            remaining    = all_ids - completed - failed - needs_review
 
             if not remaining:
-                msg = "🎉 **All tasks complete!** SindriStudio Phase 1+2 build is done."
+                msg = "🎉 **All tasks complete!**"
                 log(msg)
                 if dc and reports_channel_id:
                     dc.send_message(reports_channel_id, msg)
@@ -1882,13 +2581,19 @@ def main() -> None:
             dry_run=args.dry_run,
         )
 
-        if args.dry_run or args.task:
+        # ── Single-task mode: exit after the task completes (success or not) ──
+        # --task runs exactly one task then exits cleanly regardless of outcome.
+        # --dry-run also exits after one task (it never loops).
+        if args.task or args.dry_run:
+            if not success:
+                log_err(f"Task {task['id']} did not complete successfully.")
+                log_err(f"To retry: python forge.py --reset-task {task['id']} then rerun with --task")
+            log("Forge exiting (single-task mode)")
             break
 
         if not success:
-            # On failure: check if repos need reverting before next run
             log_err(f"Task {task['id']} failed. Stopping.")
-            log_err(f"To retry with clean repos: python forge.py --reset-task-git {task['id']}")
+            log_err(f"To retry with clean repo: python forge.py --reset-task-git {task['id']}")
             log_err(f"To retry without reverting: python forge.py --reset-task {task['id']}")
             sys.exit(1)
 
