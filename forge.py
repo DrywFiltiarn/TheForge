@@ -1347,6 +1347,15 @@ def extract_plan_section(report_text: str, task_id: str) -> str:
         return match.group(0).strip()
     return report_text[:3000]
 
+def _is_thinking_trace(report_text: str) -> bool:
+    """
+    Return True if the plan report contains a thinking trace rather than a
+    properly structured plan. A valid plan must contain at minimum these
+    mandatory section markers from .clinerules §3.
+    """
+    required = ["## Objective", "## Scope", "## Acceptance Criteria"]
+    return not any(marker in report_text for marker in required)
+
 # ─── Discord message formatting ───────────────────────────────────────────────
 
 def _extract_section(report_text: str, heading: str) -> str:
@@ -1940,6 +1949,10 @@ def build_task_prompt(task: dict, feedback: str = "") -> str:
         f"   docs/TASKS_PHASE{phase_padded}.md.\n"
         f"3. Write the plan report to .forge/reports/{tid}_plan.md.\n"
         f"   Use the exact section structure from .clinerules section 3.\n"
+        f"   Do not write anything to this file until the complete plan is\n"
+        f"   ready. The first and only write must start with the exact line\n"
+        f"   '# Plan Report: {tid}'. Writing narration, thinking, or reading\n"
+        f"   progress to this file is a session failure.\n"
         f"   Write ONLY the plan report. No source code, no test files,\n"
         f"   no build commands.\n"
         f"4. Update .forge/state/CURRENT_TASK.md:\n"
@@ -2145,6 +2158,38 @@ def execute_task(
                     )
 
             write_forge_plan_report(task, plan_text, plan_attempt)
+
+            # ── Auto-detect thinking-trace; delete and retry without Discord ─
+            if report_text and _is_thinking_trace(report_text):
+                log_warn(f"[{tid}] Plan report is a thinking trace — "
+                         f"deleting and retrying (attempt {plan_attempt})")
+                if dc and approvals_channel_id:
+                    dc.send_message(
+                        approvals_channel_id,
+                        f"🔄 `{tid}` Attempt {plan_attempt} produced a thinking "
+                        f"trace instead of a plan. Auto-retrying — no action needed.",
+                    )
+                plan_report_path(task).unlink(missing_ok=True)
+                feedback = (
+                    f"The plan contains the thinking trace rather than the "
+                    f"prescribed plan output. Write only the final plan report — "
+                    f"no narration or commentary about what you are reading or doing. "
+                    f"Start directly with '# Plan Report: {tid}'."
+                )
+                plan_attempt += 1
+                state["plan_approved"] = False
+                state["current_plan"]  = None
+                save_state(state)
+                if plan_attempt > 5:
+                    msg = f"❌ `{tid}` Thinking-trace retry limit reached. Stopping."
+                    log_err(msg)
+                    if dc and approvals_channel_id:
+                        dc.send_message(approvals_channel_id, msg)
+                    state["failed"].append(tid)
+                    state["in_progress"] = None
+                    save_state(state)
+                    return False
+                continue
 
         t_plan_end = time.monotonic()  # approval wait NOT included
         state["current_plan"] = plan_text
