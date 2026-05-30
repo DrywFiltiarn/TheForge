@@ -33,6 +33,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 # shellcheck source=/dev/null
 source "$ENV_FILE"
+source ".venv/bin/activate"
 
 SESSION_NAME="cline-workspace"
 FORGE_LOG="$SCRIPT_DIR/forge.log"
