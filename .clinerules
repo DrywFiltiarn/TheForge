@@ -383,6 +383,26 @@
 # 7.6  If tests fail after implementation, Cline MUST fix the failures
 #      before writing the report. Test-fix is part of the ACT session.
 #      Cline MUST NOT write the implementation report with known failures.
+#
+# 7.7  WINDOWS CROSS-CHECK (prevents Linux-passes / Windows-breaks drift).
+#      Wherever a Linux workspace check is required (clippy in 7.x and the
+#      workspace test in 7.3), Cline MUST ALSO run, before writing the
+#      implementation report:
+#
+#        cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware
+#
+#      The x86_64-pc-windows-gnu target and the gcc-mingw-w64 linker are
+#      installed in the local environment, so this runs on the Linux dev/CI
+#      host without a Windows machine. It catches the common failure mode:
+#      #[cfg(windows)] / #[cfg(unix)] code or platform-specific APIs that
+#      compile on Linux but break the native windows-latest CI job.
+#      This cross-check is a fast proxy, NOT a replacement for the native
+#      rust-windows CI job (it uses the GNU toolchain, not MSVC). A clean
+#      Linux build is NOT sufficient evidence — the windows-gnu check must
+#      also pass with zero errors before the report is written. Record its
+#      result in ## Test Results alongside the Linux output.
+#      The toolchain is pinned to Rust 1.95.0 via rust-toolchain.toml; do
+#      not override the channel, and do not relax the pin to make a check pass.
 
 
 # ── 8. DOCUMENTATION TOOLS ──────────────────────────────────────────────────────
@@ -436,7 +456,7 @@
 # finite context window. The following rules are calibrated to its behaviour.
 #
 # 9.1  Context usage is monitored externally via context.log.
-#      Sessions run within CLINE_TIMEOUT (90 min). Do not race the clock.
+#      Sessions run within CLINE_TIMEOUT (120 min). Do not race the clock.
 #
 # 9.2  At 50% context usage: continue normally. Note usage in internal planning
 #      only — do not write anything to disk or Discord about it.
