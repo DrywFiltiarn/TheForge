@@ -14,13 +14,12 @@
 # Cline's permitted output types:
 #   PLAN session  → exactly one markdown report file, then STOP
 #   ACT session   → source code, tests, CI updates, one report file, local
-#                   git commit(s) in submodule repos, then STOP
+#                   git stages in the project repo, then STOP
 #
 # Cline must NEVER:
-#   • Commit or push to the root SindriStudio repository
-#   • Push any branch to any remote (push is exclusively The Forge's job)
+#   • Commit or push to any repository — git is exclusively The Forge's domain
 #   • Send messages to Discord
-#   • Edit forge.py, tasks.json, state.json, or any file under forge/
+#   • Edit forge.py, state.json, or any file under forge/tasks/
 #   • Delete or rename report files already written
 #   • Exceed the scope of the current task as defined in the task context
 
@@ -32,23 +31,22 @@
 #   SindriStudio Task: <TASK_ID>
 #   Description: <description>
 #   Phase: <NNN>
+#   Project: <name>
 #
-# TASK_ID format:  P<phase>-<letter><number>   e.g. P1-A3, P002-B7
+# TASK_ID format:  P<phase>-<letter><number>   e.g. P1-A3, P2-B7
 # Phase numbering: 001–999; each phase number maps to a named phase documented
-#                  in docs/PHASES.md (e.g. Phase 001 = "Repository Scaffold",
-#                  Phase 002 = "AnvilML Core").
+#                  in docs/PHASES.md.
 #
-# The injected header also contains:
-#   Project: <name>   — the logical name registered in repos.json
-#                        (e.g. "anvilml", "sindristudio", "bloomeryui")
+# Project: the logical name registered in repos.json
+#          (e.g. "anvilml", "sindristudio", "bloomeryui")
 # Each task targets exactly ONE project. Multi-repo work must be split into
 # separate tasks, one per repository.
 #
 # On session start, Cline MUST:
 #   1. Read .forge/state/CURRENT_TASK.md
 #   2. Confirm the Task field matches the injected TASK_ID
-#   3. If mismatch: write a one-line error to .forge/reports/<TASK_ID>_plan.md
-#      and STOP — do not proceed
+#   3. If mismatch: write a one-line error to
+#      .forge/reports/<TASK_ID>_plan.md and STOP — do not proceed
 #   4. Read docs/ENVIRONMENT.md, docs/ARCHITECTURE.md, and the relevant
 #      docs/TASKS_PHASE<NNN>.md before writing a single line of output
 
@@ -56,7 +54,7 @@
 # ── 2. SESSION MODES ────────────────────────────────────────────────────────────
 #
 # The Forge invokes Cline in exactly one of two modes per task.
-# The active mode is determined by the Forge via the `-p` flag and the
+# The active mode is determined by The Forge via the `-p` flag and the
 # injected prompt. Cline MUST NOT infer or switch modes on its own.
 #
 # ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -73,7 +71,7 @@
 # │   • Writing any source code, test, config, or CI file                      │
 # │   • Running compilers, test runners, linters, or any build tool            │
 # │   • Any git operation                                                       │
-# │   • Any network call outside local filesystem reads                        │
+# │   • Any network call except documentation MCP tools (see §8)               │
 # │                                                                             │
 # │ Termination: After writing the report and updating CURRENT_TASK.md — STOP. │
 # │ Do not wait for approval. Do not proceed to implementation.                 │
@@ -83,8 +81,8 @@
 # ┌─────────────────────────────────────────────────────────────────────────────┐
 # │ MODE B: ACT  (Cline invoked in act mode, approved plan injected)            │
 # │                                                                             │
-# │ Goal: implement the approved plan, run tests to zero failures, local-commit │
-# │       in submodule repos, write the implementation report — then STOP.     │
+# │ Goal: implement the approved plan, run tests to zero failures, stage        │
+# │       changes (git add -A), write the implementation report — then STOP.   │
 # │                                                                             │
 # │ Permitted actions:                                                          │
 # │   • Read any file in the repository                                         │
@@ -109,22 +107,39 @@
 
 # ── 3. PLAN REPORT FORMAT ───────────────────────────────────────────────────────
 #
-# Output path: forge/reports/<TASK_ID>_plan.md
+# Output path: .forge/reports/<TASK_ID>_plan.md
 #
-# The report MUST use exactly the following structure. Sections are mandatory.
-# Omitting a section or adding unlabelled free-text outside sections is an error.
-# Do NOT include any model thinking, reasoning traces, or internal notes.
+# STRUCTURAL RULE: Every section in the template below is MANDATORY. Sections
+# MUST appear in exactly the order shown. If a section has no applicable content
+# (e.g. Tests for a config-only task), write "None." under the heading — never
+# omit the heading itself. Do not merge sections. Do not add free-text outside
+# a named section. Do not include reasoning traces or internal notes.
+# Simple tasks do not justify shorter reports — the structure is fixed regardless
+# of task complexity.
+#
+# PRE-STOP CHECK — before updating CURRENT_TASK.md and stopping, verify:
+#   ☐ The file's first line is exactly "# Plan Report: <TASK_ID>" — not
+#      narration, not "I'll analyze...", not any conversational text
+#   ☐ Header table present with all seven fields (Task ID through Attempt)
+#   ☐ ## Objective — one paragraph, present
+#   ☐ ## Scope — contains ### In Scope and ### Out of Scope subsections
+#   ☐ ## Approach — numbered steps, each specific enough to execute deterministically
+#   ☐ ## Files Affected — table with Action / Path / Description columns
+#   ☐ ## Tests — table present (or "None." if task writes no test files)
+#   ☐ ## CI Impact — paragraph present (or "No CI changes required.")
+#   ☐ ## Risks and Mitigations — table present
+#   ☐ ## Acceptance Criteria — checklist with verifiable, command-based items
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # # Plan Report: <TASK_ID>
 #
-# | Field       | Value                                      |
+# | Field       | Value                                       |
 # |-------------|---------------------------------------------|
 # | Task ID     | <TASK_ID>                                   |
 # | Phase       | <NNN> — <Phase Name>                        |
 # | Description | <task description>                          |
 # | Depends on  | <comma-separated prereq IDs or "none">      |
-# | Repos       | <comma-separated repo names>                |
+# | Project     | <project name>                              |
 # | Planned at  | <ISO 8601 UTC timestamp>                    |
 # | Attempt     | <integer, 1 for first, increments on retry> |
 #
@@ -187,43 +202,76 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── 4. IMPLEMENTATION REPORT FORMAT ────────────────────────────────────────────
+# ── 4. IMPLEMENTATION REPORT FORMAT ─────────────────────────────────────────────
 #
-# Output path: forge/reports/<TASK_ID>_implement.md
+# Output path: .forge/reports/<TASK_ID>_implement.md
 #
-# Written at the end of the ACT session, after all tests pass and local
-# commits are made. Same structural discipline as the plan report.
-# Sections are mandatory. No thinking traces, no reasoning, no filler.
+# STRUCTURAL RULE: Every section below is MANDATORY and must appear in the exact
+# order shown. Do not omit, merge, or reorder sections. If a section has no
+# applicable content, write "None." under the heading — never omit the heading.
+# Simple tasks do not justify shorter reports — the structure is fixed regardless
+# of task complexity.
+#
+# SECTION DISTINCTION — ## Files Changed vs ## Commit Log:
+# These two sections are NOT interchangeable. BOTH MUST be present. Using one
+# in place of the other is a formatting violation.
+#
+#   ## Files Changed
+#     A STATIC TABLE describing what this task touched. Mirrors the plan's
+#     "Files Affected" table, extended with any unplanned files actually modified.
+#     Action MUST be one of: CREATE | MODIFY | DELETE.
+#     Populated from the plan + your own changes — NOT derived from git output.
+#     Example row:
+#       | MODIFY | .github/workflows/ci.yml | Added rust-windows job (+25 lines) |
+#
+#   ## Commit Log
+#     The LIVE GIT STAGING STATE. Run `git status --short` in the project repo
+#     immediately before writing this section. Paste the raw output verbatim
+#     inside a fenced code block. Do NOT replace this with a table or prose.
+#     Do NOT write "No changes" unless the staging area is genuinely empty.
+#     Example:
+#       ```
+#       M  .github/workflows/ci.yml
+#       A  .forge/reports/P1-A3_implement.md
+#       M  .forge/state/CURRENT_TASK.md
+#       ```
+#
+# PRE-STOP CHECK — before setting Status=COMPLETE and stopping, verify:
+#   ☐ Header table present with all six fields (Task ID through Attempt)
+#   ☐ ## Summary — one paragraph, present
+#   ☐ ## Files Changed — table with Action / Path / Description rows, NOT git output
+#   ☐ ## Test Results — final passing run output verbatim in a code block
+#   ☐ ## CI Changes — present (or "No CI changes made.")
+#   ☐ ## Commit Log — raw `git status --short` output in a code block, NOT a table
+#   ☐ ## Acceptance Criteria — Verification table with PASS/FAIL rows for every
+#      criterion from the plan
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # # Implementation Report: <TASK_ID>
 #
-# | Field            | Value                                      |
-# |------------------|--------------------------------------------|
-# | Task ID          | <TASK_ID>                                  |
-# | Phase            | <NNN> — <Phase Name>                       |
-# | Description      | <task description>                         |
-# | Plan report      | forge/reports/<TASK_ID>_plan.md            |
-# | Implemented at   | <ISO 8601 UTC timestamp>                   |
-# | Test result      | PASS — <N> tests, 0 failures               |
+# | Field          | Value                                      |
+# |----------------|---------------------------------------------|
+# | Task ID        | <TASK_ID>                                   |
+# | Phase          | <NNN> — <Phase Name>                        |
+# | Description    | <task description>                          |
+# | Project        | <project name>                              |
+# | Implemented at | <ISO 8601 UTC timestamp>                    |
+# | Attempt        | <integer>                                   |
 #
 # ## Summary
 #
-# One paragraph. What was built, key design decisions made during
-# implementation, and any notable deviations from the plan (with justification).
-# Deviations require explicit justification; silent scope changes are rejected.
+# One paragraph. What was implemented and any notable decisions made.
 #
 # ## Files Changed
 #
 # | Action   | Path                              | Description            |
 # |----------|-----------------------------------|------------------------|
-# | CREATED  | <path>                            | <what it contains>     |
-# | MODIFIED | <path>                            | <what changed>         |
-# | DELETED  | <path>                            | <reason>               |
+# | CREATE   | <path>                            | <what it contains>     |
+# | MODIFY   | <path>                            | <what changed>         |
 #
 # ## Test Results
 #
-# Paste the final test runner output verbatim inside a code fence.
+# Show the exact test runner output for the final passing run.
 # All runs must show 0 failures before writing this report.
 #
 # ```
@@ -236,23 +284,11 @@
 #
 # ## Commit Log
 #
-# List every local commit made in each submodule repo (git log --oneline).
-# Commits must follow Conventional Commits format:
-#   <type>(<scope>): <description>
+# List every local git stage (not commit — The Forge commits) in the project repo.
+# `git status --short` output is sufficient.
 #
-# Valid types:  feat | fix | test | docs | refactor | chore
-# Valid scopes: anvilml-core | anvilml-ipc | anvilml-hardware | anvilml-registry
-#               anvilml-worker | anvilml-scheduler | anvilml-server | py-worker
-#               bloomeryui | root
-#
-# ### backend (AnvilML)
 # ```
-# <git log --oneline output>
-# ```
-#
-# ### frontend (BloomeryUI)
-# ```
-# <git log --oneline output>
+# <git status --short output>
 # ```
 #
 # ## Acceptance Criteria — Verification
@@ -292,7 +328,10 @@
 # 5.5  Do not amend, rebase, or force-push any commit.
 #
 # 5.6  Do not create, delete, or rename branches.
-#      All work is on the current branch (main).
+#      All work is on the project's configured working branch, as set in
+#      repos.json for that project. The Forge verifies and switches to the
+#      correct branch before invoking Cline. Cline may rely on the branch
+#      already being correct when the session starts.
 #
 # 5.7  Do not modify .gitmodules or any GitHub Actions workflow file
 #      unless explicitly listed in the task's "Files Affected" table.
@@ -314,7 +353,7 @@
 # 6.4  Do not modify unrelated tests. Do not delete tests.
 #
 # 6.5  If a prerequisite task's output is missing or incomplete, STOP and
-#      write the blocker to forge/reports/<TASK_ID>_plan.md or _implement.md
+#      write the blocker to .forge/reports/<TASK_ID>_plan.md or _implement.md
 #      under a "## Blockers" section. Do not attempt to compensate.
 
 
@@ -346,116 +385,215 @@
 #      Cline MUST NOT write the implementation report with known failures.
 
 
-# ── 8. CONTEXT WINDOW MANAGEMENT ───────────────────────────────────────────────
+# ── 8. DOCUMENTATION TOOLS ──────────────────────────────────────────────────────
 #
-# 8.1  Context usage is monitored externally via context.log.
-#      Cline should be aware that sessions run within CLINE_TIMEOUT (90 min).
+# Two MCP tools are available for authoritative dependency resolution:
+#   • mcp-rust-docs  — queries crates.io and docs.rs for Rust crates
+#   • pypi-query-mcp-server — queries PyPI for Python packages
 #
-# 8.2  At 50% context usage:  continue normally, note usage in internal planning.
+# These tools exist to prevent stale training-data assumptions from causing
+# compiler failures, wrong feature flags, or incorrect API usage. They are
+# structural guardrails: their tool schemas do not expose search engines,
+# forums, or aggregators, so misuse is architecturally prevented.
 #
-# 8.3  At 65% context usage:  prioritise completing the current atomic step.
-#      If mid-implementation, finish the current file, run tests, commit,
-#      then write a partial implementation report with a "## Continuation"
-#      section listing what remains. STOP cleanly so The Forge can resume.
+# 8.1  In PLAN sessions, Cline MUST use these tools to verify — before
+#      writing any version number, feature flag, or API call in the plan:
+#        a) The current stable version of every dependency named in the
+#           task context (Cargo.toml entries, requirements/*.txt entries)
+#        b) The correct feature flags for any crate feature the plan references
+#        c) The current API shape of any type or method the plan relies on
+#      Relying on training-data assumptions instead of a live lookup is
+#      an error when the tool is available and the lookup takes <5 seconds.
 #
-# 8.4  Do not attempt to compress the task scope to fit the context window.
-#      Write a clean partial report and stop; do not produce half-baked output.
+# 8.2  In ACT sessions, Cline MAY use these tools to resolve a compiler
+#      or runtime error caused by an API mismatch — specifically to read
+#      the docs for a crate or package already present in the dependency
+#      files. The lookup and its result MUST be recorded in the
+#      implementation report under a ## Dependency Notes section.
 #
-# 8.5  The Forge will detect a partial implementation report and resume
-#      the ACT session in a new Cline invocation with the partial report
-#      injected as context.
+# 8.3  Permitted sources (enforced by tool schema — no additional rules needed):
+#        Rust:   crates.io, docs.rs
+#        Python: pypi.org
+#
+# 8.4  Cline MUST NOT use lookup results to introduce any dependency not
+#      already present in Cargo.toml or requirements/*.txt. Discovery of
+#      a newer or alternative package is not grounds for scope change.
+#      If a looked-up API reveals that the task context specifies an
+#      impossible or broken dependency combination, Cline MUST:
+#        a) Document the finding in the plan report (PLAN) or implementation
+#           report (ACT) under ## Dependency Notes
+#        b) Set Status=BLOCKED in CURRENT_TASK.md if the conflict cannot
+#           be resolved within the approved plan's scope
+#        c) STOP — do not invent a workaround using an unsanctioned dependency
+#
+# 8.5  No other network-accessing tools are permitted. These two MCP tools
+#      are the complete and exhaustive set of permitted external lookups.
 
 
-# ── 9. PROHIBITED BEHAVIOURS ────────────────────────────────────────────────────
+# ── 9. CONTEXT WINDOW MANAGEMENT (Qwen3 235B A22B / 35B A3B) ───────────────────
+#
+# The model running Cline sessions is a Qwen3 MoE variant with a large but
+# finite context window. The following rules are calibrated to its behaviour.
+#
+# 9.1  Context usage is monitored externally via context.log.
+#      Sessions run within CLINE_TIMEOUT (90 min). Do not race the clock.
+#
+# 9.2  At 50% context usage: continue normally. Note usage in internal planning
+#      only — do not write anything to disk or Discord about it.
+#
+# 9.3  At 65% context usage: STOP accumulating new context. Finish the current
+#      file or function, run tests, stage changes (git add -A), write a partial
+#      implementation report with a "## Continuation" section listing exactly
+#      what remains unimplemented. Update .forge/state/CURRENT_TASK.md with
+#      Status=PARTIAL. Then STOP — The Forge will resume in a fresh session.
+#
+# 9.4  Do NOT compress or summarise prior content to extend the session.
+#      A clean partial is always preferable to degraded output at full context.
+#
+# 9.5  Do NOT hallucinate file contents or API signatures when context is high.
+#      If you are uncertain about a symbol, re-read the relevant file even if it
+#      costs tokens. Wrong assumptions compound and are expensive to undo.
+#
+# 9.6  The Forge will detect Status=PARTIAL and resume the ACT session with the
+#      partial report injected as context. Do not attempt to detect or handle
+#      resumption yourself — the injected header will say "RESUME SESSION".
+#
+# 9.7  Qwen3 thinking mode: The Forge may enable extended thinking for PLAN
+#      sessions (/think tag). Do NOT emit thinking traces to any output file.
+#      Thinking is internal only. All written output must be the final,
+#      clean plan or implementation report.
+#
+#      SINGLE WRITE RULE: Write the plan or implementation report file
+#      EXACTLY ONCE, in a single write_file call, containing the complete
+#      finished document from the opening # heading to the final section.
+#      Do not write interim notes, progress updates, reasoning, or partial
+#      drafts to the report file at any point. The report file must not
+#      exist until the document is complete and ready.
+#      A report that does not begin with "# Plan Report: <TASK_ID>" or
+#      "# Implementation Report: <TASK_ID>" is malformed and constitutes
+#      a session failure.
+
+
+# ── 10. PROHIBITED BEHAVIOURS ───────────────────────────────────────────────────
 #
 # The following are unconditional prohibitions regardless of task context:
 #
-# 9.1  No git push, git push --force, or any remote write operation.
-# 9.2  No modifications to forge.py, state.json, tasks.json, or forge/*.py.
-# 9.3  No modifications to files outside the repos listed in the task's
-#      "repos" field (e.g. if repos=["anvilml"], do not touch frontend/).
-# 9.4  No use of environment variables, secrets, or API keys not already
-#      present in the repository's documented configuration.
-# 9.5  No network calls to external services (no npm publish, cargo publish,
-#      Docker push, S3 upload, or equivalent).
-# 9.6  No interactive prompts. All tool invocations must be non-interactive
-#      (use -y, --yes, --non-interactive flags where applicable).
-# 9.7  No spawning of background processes or daemons that outlive the session.
-# 9.8  No modifications to .env files or secrets unless the task explicitly
-#      lists a specific .env.example change in "Files Affected".
-# 9.9  No self-modification: do not read, edit, or reason about .clinerules
-#      as a target for modification. This file is read-only to Cline.
+# 10.1  No git push, git push --force, or any remote write operation.
+# 10.2  No modifications to forge.py, state.json, or any file under forge/tasks/.
+# 10.3  No modifications to files outside the single project repo named in the
+#       task's "project" field.
+# 10.4  No use of environment variables, secrets, or API keys not already
+#       present in the repository's documented configuration.
+# 10.5  No network calls to external services except the documentation MCP
+#       tools defined in §8 (no npm publish, cargo publish, Docker push,
+#       S3 upload, web search, or equivalent).
+# 10.6  No interactive prompts. All tool invocations must be non-interactive
+#       (use -y, --yes, --non-interactive flags where applicable).
+# 10.7  No spawning of background processes or daemons that outlive the session.
+# 10.8  No modifications to .env files or secrets unless the task explicitly
+#       lists a specific .env.example change in "Files Affected".
+# 10.9  No self-modification: do not read, edit, or reason about .clinerules
+#       as a target for modification. This file is read-only to Cline.
 
 
-# ── 10. ERROR HANDLING AND STOPPING ─────────────────────────────────────────────
+# ── 11. ERROR HANDLING AND STOPPING ─────────────────────────────────────────────
 #
-# 10.1  If Cline encounters an unrecoverable error (missing prerequisite output,
+# 11.1  If Cline encounters an unrecoverable error (missing prerequisite output,
 #       environment misconfiguration, unresolvable build failure), it MUST:
 #       a. Write a "## Blockers" section to the in-progress report file
-#       b. Update forge/state/CURRENT_TASK.md with Status=BLOCKED
+#          (.forge/reports/<TASK_ID>_plan.md or _implement.md)
+#       b. Update .forge/state/CURRENT_TASK.md with Status=BLOCKED
 #       c. STOP immediately — do not guess, retry indefinitely, or continue
 #          with a workaround that was not in the plan
 #
-# 10.2  Build failures that are within the task's scope (i.e., caused by code
+# 11.2  Build failures that are within the task's scope (i.e., caused by code
 #       written in this session) MUST be fixed before writing the report.
 #       They are not blockers; they are part of the test-fix loop.
 #
-# 10.3  Build failures caused by pre-existing issues in the repository
+# 11.3  Build failures caused by pre-existing issues in the repository
 #       (not introduced by this task) ARE blockers. Document and stop.
 #
-# 10.4  If a test runner produces flaky results (pass on retry), document
+# 11.4  If a test runner produces flaky results (pass on retry), document
 #       the flakiness in the implementation report under "## Test Results"
 #       and ensure the final run shows 0 failures.
 
 
-# ── 11. FILE AND PATH CONVENTIONS ───────────────────────────────────────────────
+# ── 12. FILE AND PATH CONVENTIONS ───────────────────────────────────────────────
 #
-# 11.1  Report files — inside the TARGET REPOSITORY:
+# 12.1  Report files — inside the TARGET REPOSITORY (dot-prefixed directory):
 #         .forge/reports/<TASK_ID>_plan.md       — written in PLAN session
 #         .forge/reports/<TASK_ID>_implement.md  — written in ACT session
 #       Paths are relative to the project repo root (e.g. AnvilML/).
 #       .forge/ is a hidden directory, version-controlled in the project repo,
 #       committed by The Forge as part of the post-approval commit.
 #
-# 11.2  State file — inside the TARGET REPOSITORY:
+# 12.2  State file — inside the TARGET REPOSITORY (dot-prefixed directory):
 #         .forge/state/CURRENT_TASK.md
 #       Must be updated at the end of every session.
 #       Format:
 #         Task: <TASK_ID>
 #         Step: <PLAN|IMPLEMENT>
-#         Status: <COMPLETE|BLOCKED>
+#         Status: <COMPLETE|PARTIAL|BLOCKED>
 #         Updated: <ISO 8601 UTC>
 #
-# 11.3  Phase task documents — inside the TARGET REPOSITORY:
+# 12.3  Phase task documents — inside the TARGET REPOSITORY:
 #         docs/TASKS_PHASE<NNN>.md    (e.g. docs/TASKS_PHASE001.md)
 #       Cline reads this but does not modify it.
 #
-# 11.4  Project scope: the task's "project" field names the single repository
+# 12.4  Task JSON files — inside the TARGET REPOSITORY (not The Forge dir):
+#         forge/tasks/tasks_phase<NNN>.json
+#       Cline reads these but does not modify them.
+#       The Forge (forge.py) loads them at startup from each registered repo.
+#
+# 12.5  Project scope: the task's "project" field names the single repository
 #       Cline operates on. Cline MUST NOT read or write files outside that
 #       repository. The Forge resolves the project name to an absolute path
 #       via repos.json, which lives next to forge.py (not in any repository).
 #
-# 11.5  Do not create files at the repository root unless explicitly listed
+# 12.6  Do not create files at the repository root unless explicitly listed
 #       in the plan's "Files Affected" table.
+#
+# 12.7  IMPORTANT — the .forge/ directory is dot-prefixed (hidden).
+#       Do not confuse it with a non-hidden forge/ directory.
+#       Correct:   .forge/reports/P1-A1_plan.md
+#       Incorrect:  forge/reports/P1-A1_plan.md
 
 
-# ── 12. PHASE NUMBERING REFERENCE ───────────────────────────────────────────────
+# ── 13. PHASE NUMBERING REFERENCE ───────────────────────────────────────────────
 #
 # Phase numbers are zero-padded to three digits in filenames (001, 002 …)
 # and displayed as plain integers in task IDs (P1-A3, not P001-A3).
 # The canonical mapping of phase number to phase name is in docs/PHASES.md.
-# Example mapping (authoritative source is always docs/PHASES.md):
+# Cline must read docs/PHASES.md for the authoritative list — do not rely on
+# this file's examples, which may be outdated.
 #
-#   001  Repository Scaffold & CI
-#   002  AnvilML Core Types
-#   003  AnvilML IPC Protocol
-#   004  AnvilML Worker Management
-#   005  AnvilML Scheduler
-#   006  AnvilML HTTP/WS Server
-#   007  Python Worker
-#   008  BloomeryUI Foundation
-#   009  BloomeryUI Node Graph
-#   010  BloomeryUI Integration & E2E
+# Example mapping (always verify against docs/PHASES.md):
+#   001  Workspace Scaffold
+#   002  Core Types & IPC
+#   003  Hardware Detection
+#   004  Persistence & Model Registry
+#   005  Worker Management
+#   006  Scheduler
+#   007  HTTP & WebSocket Server
+#   008  Launcher & Graceful Shutdown
+#   009  Python Worker — ZiT
+#   010  SDXL & Hardening
+
+
+# 9.8  Output structure discipline (35B A3B): The 35B A3B model variant tends
+#      to abbreviate or drop report sections when the task appears simple.
+#      This is never acceptable — report structure is fixed regardless of task
+#      size. Specific patterns to avoid:
+#        • Omitting ## Files Changed because ## Commit Log is present (or vice
+#          versa) — both are always required; they serve different purposes
+#        • Writing a prose summary instead of the header table
+#        • Collapsing ## In Scope / ## Out of Scope into a single paragraph
+#        • Skipping ## Risks and Mitigations with "no risks identified"
+#          (write the table with at least one row; if genuinely none apply,
+#           write a single row with Risk="None identified" and Mitigation="n/a")
+#        • Writing ## Test Results as a summary sentence rather than verbatim
+#          test runner output
+#      Use the PRE-STOP CHECK in §3 and §4 as a mechanical gate before stopping.
 
 
 # ── END OF .clinerules ──────────────────────────────────────────────────────────

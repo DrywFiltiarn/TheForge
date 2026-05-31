@@ -80,6 +80,7 @@ REPOS_FILE       = FORGE_DIR / "repos.json"
 LOG_FILE         = FORGE_DIR / "forge.log"
 CLINE_LOG_FILE   = FORGE_DIR / "cline.log"
 CONTEXT_LOG_FILE = FORGE_DIR / "context.log"
+CLINE_SKIPPED_LOG_FILE = FORGE_DIR / "cline-skipped.log"  # temporary: unhandled event types
 
 # Resolved in main() after --repo is validated.
 # Points to <repo>/.forge/state.json — scoped to the active repository.
@@ -356,7 +357,7 @@ FORGE_OWNER_ID = "334811986019745792"
 
 # Cline
 CLINE_BIN = os.environ.get("FORGE_CLINE_BIN", "cline")
-CLINE_TIMEOUT = int(os.environ.get("FORGE_CLINE_TIMEOUT", str(60 * 90)))  # 90 min
+CLINE_TIMEOUT = int(os.environ.get("FORGE_CLINE_TIMEOUT", str(60 * 120)))  # 120 min
 CLINE_RETRIES = int(os.environ.get("FORGE_CLINE_RETRIES", "3"))
 CLINE_RETRY_DELAY = int(os.environ.get("FORGE_CLINE_RETRY_DELAY", "60"))
 
@@ -1349,12 +1350,27 @@ def extract_plan_section(report_text: str, task_id: str) -> str:
 
 def _is_thinking_trace(report_text: str) -> bool:
     """
-    Return True if the plan report contains a thinking trace rather than a
-    properly structured plan. A valid plan must contain at minimum these
-    mandatory section markers from .clinerules §3.
+    Return True if the plan report is a thinking trace rather than a properly
+    structured plan document.
+
+    A valid plan must:
+    1. Start with "# Plan Report:" as its first non-empty line.
+    2. Contain ALL three mandatory section headers from .clinerules §3.
+
+    Thinking traces typically start with first-person narration ("I'll", "Now",
+    "Let me", etc.) and lack the required structural sections.
     """
+    if not report_text or not report_text.strip():
+        return True
+
+    # Check the file starts with the required heading, not first-person narration
+    first_line = report_text.lstrip().splitlines()[0].strip()
+    if not first_line.startswith("# Plan Report:"):
+        return True
+
+    # All three structural sections must be present
     required = ["## Objective", "## Scope", "## Acceptance Criteria"]
-    return not any(marker in report_text for marker in required)
+    return not all(marker in report_text for marker in required)
 
 # ─── Discord message formatting ───────────────────────────────────────────────
 
@@ -1653,29 +1669,108 @@ def _update_context_display(task_id: str, mode: str, pct: float,
         pass  # non-critical
 
 
+def _summarise_command(cmd: str) -> str:
+    """
+    Return a short human-readable description of a shell command for cline.log.
+    Avoids truncating mid-token by recognising common patterns.
+    """
+    import re as _re
+    s = cmd.strip()
+
+    # Bare redirect: > /path/to/file  (Cline writing a file with no command)
+    m = _re.match(r'^>\s*(\S+)', s)
+    if m:
+        return f"write → {m.group(1).rsplit('/', 1)[-1]}"
+
+    # cat > file (heredoc write)
+    m = _re.match(r'cat\s*>\s*(\S+)', s)
+    if m:
+        return f"write → {m.group(1).rsplit('/', 1)[-1]}"
+
+    # python3 -c "..." or python3 << 'EOF'  (inline python)
+    if _re.match(r'python3?\s+(-c\s+|<<)', s):
+        for line in s.splitlines():
+            m = _re.search(r"open\([\"']([^\"']+)[\"']", line)
+            if m:
+                return f"python → {m.group(1).rsplit('/', 1)[-1]}"
+        return "python inline"
+
+    # python3 /path/to/script.py
+    m = _re.match(r'python3?\s+(\S+\.py)', s)
+    if m:
+        return m.group(1).rsplit('/', 1)[-1]
+
+    # cargo <subcommand> [args]
+    m = _re.match(r'(cargo\s+\w+(?:\s+-p\s+\S+)?(?:\s+--\S+)*)', s)
+    if m:
+        return m.group(1)[:80]
+
+    # git <subcommand> [args]
+    m = _re.match(r'(git\s+\S+(?:\s+\S+){0,3})', s)
+    if m:
+        return m.group(1)[:60]
+
+    # find / grep / pytest / tee — show as-is up to 80 chars
+    if _re.match(r'(find|grep|pytest|tee|ls|cp|mv|rm|mkdir|touch)\s', s):
+        return s[:80]
+
+    # Default: first 80 chars
+    return s[:80]
+
+
 def _write_cline_log(clf, event: dict, token_buf: list[str],
                      task_id: str = "", mode: str = "") -> None:
     """
     Write a human-readable line to cline.log for a single Cline NDJSON event.
-    Also extracts context usage percentage from environment_details events
+    Also extracts context usage percentage from agent_event/usage events
     and writes it to context.log for live monitoring in the tmux context pane.
+
+    Supports both Cline 3.x say/ask schema and legacy agent_event schema.
+    The agent_event/usage branch is the authoritative source for context tracking
+    and must not be modified.
 
     Token accumulation: content_start events carry individual tokens (~one word).
     We buffer them and flush as a complete paragraph when a non-token event
-    arrives or when the buffer gets long enough, so tail -f shows readable prose
-    rather than one JSON blob per word.
+    arrives, so tail -f shows readable prose rather than one JSON blob per word.
 
     Event type mapping:
+      agent_event / usage               → update context.log (DO NOT CHANGE)
       agent_event / content_start       → accumulate tokens, flush on paragraph break
       agent_event / content_block_stop  → flush token buffer as a line
       agent_event / tool_use            → "  ▶ tool_name(params)"
       agent_event / tool_result         → "  ◀ result summary"
-      environment_details               → extract context %, update context.log
+      agent_event / message_start       → iteration separator
+      say / text                        → model prose (Cline 3.x)
+      say / command_output              → "  ◀ ..." subprocess output
+      say / completion_result           → "  ✓ COMPLETE"
+      say / api_req_started             → "  ── api request ──"
+      say / error                       → "  ✗ ERROR"
+      ask / tool                        → "  ▶ tool hint"
+      ask / command                     → "  ▶ execute_command $ ..."
       system / info / error             → prefixed plain text
       anything else                     → skip (noise)
     """
     etype = event.get("type", "")
-    ts    = event.get("ts", "")[-8:-1] if event.get("ts") else ""  # HH:MM:SS
+
+    # ts field is a Unix-ms integer in Cline 3.x say/ask events,
+    # or an ISO-8601 string (e.g. "2026-05-30T19:12:51.942Z") in agent_event wrappers.
+    raw_ts = event.get("ts")
+    if isinstance(raw_ts, (int, float)) and raw_ts > 1_000_000_000_000:
+        # Unix milliseconds (Cline 3.x say/ask) — convert to local time
+        ts = datetime.fromtimestamp(raw_ts / 1000, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
+    elif isinstance(raw_ts, str):
+        # ISO-8601 UTC string — parse and convert to local time
+        _m = re.search(r'T(\d{2}:\d{2}:\d{2})', raw_ts)
+        if _m:
+            try:
+                _dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                ts = _dt.astimezone().strftime("%H:%M:%S")
+            except ValueError:
+                ts = _m.group(1)  # fallback to raw UTC if parse fails
+        else:
+            ts = ""
+    else:
+        ts = ""
 
     def flush_tokens() -> None:
         if token_buf:
@@ -1683,8 +1778,9 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
             if len(token_buf) == 1 and token_buf[0].startswith("\x00ITER\x00"):
                 token_buf.clear()
                 return
+            # Strip all sentinel tokens (ITER, REASONING) — only emit plain text
             text = "".join(
-                t for t in token_buf if not t.startswith("\x00ITER\x00")
+                t for t in token_buf if not t.startswith("\x00")
             ).strip()
             if text:
                 clf.write(f"  {text}\n")
@@ -1724,17 +1820,139 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
             except (ValueError, TypeError):
                 pass
 
-        elif itype == "content_end":
-            token_buf.clear()
-            text = inner.get("text", "").strip()
-            if text:
+        elif itype == "content_start":
+            ctype = inner.get("contentType", "")
+            if ctype == "text":
+                token_buf.append(inner.get("text", ""))
+            elif ctype == "reasoning":
+                # Accumulate reasoning into a separate buffer key using sentinel
+                token_buf.append(f"\x00REASONING\x00{inner.get('reasoning', '')}")
+            elif ctype == "tool":
+                # Tool call start — emit immediately, don't buffer
+                flush_tokens()
                 emit_iter_header_if_pending()
-                clf.write(f"  {text}\n")
+                tool_name = inner.get("toolName", inner.get("name", "?"))
+                params    = inner.get("input", {})
+                if not isinstance(params, dict):
+                    params = {}
+
+                if tool_name in ("read_file", "write_file", "write_to_file",
+                                 "create_file", "list_files", "list_directory",
+                                 "delete_file", "apply_diff", "apply_patch"):
+                    hint = f" {params.get('path', '')}"
+                elif tool_name == "read_files":
+                    # input: {"files": [{"path": "..."}]}
+                    files = params.get("files", [])
+                    if isinstance(files, list) and files:
+                        paths = ", ".join(f.get("path", "?") for f in files[:3])
+                        hint = f" {paths}"
+                    else:
+                        hint = ""
+                elif tool_name in ("run_commands", "execute_command"):
+                    # input: {"commands": ["..."]} or {"command": "..."}
+                    cmds = params.get("commands", [])
+                    raw_cmd = str(cmds[0]) if (isinstance(cmds, list) and cmds) else str(params.get("command", ""))
+                    hint = f" $ {_summarise_command(raw_cmd)}"
+                elif tool_name in ("search_files", "search_replace", "search_codebase"):
+                    q = params.get("query", params.get("queries", params.get("pattern", "")))
+                    if isinstance(q, list):
+                        q = ", ".join(str(x) for x in q[:2])
+                    hint = f" {str(q)[:80]!r}"
+                elif tool_name == "attempt_completion":
+                    result_val = str(params.get("result", ""))[:60]
+                    hint = f" result={result_val!r}"
+                else:
+                    hint = ""
+                    for key in ("path", "command", "url", "query", "description"):
+                        if key in params:
+                            hint = f" {key}={str(params[key])[:80]!r}"
+                            break
+                clf.write(f"\n  ▶ [{ts}] {tool_name}{hint}\n")
                 clf.flush()
 
-        elif itype == "content_start":
-            token = inner.get("text", "")
-            token_buf.append(token)
+        elif itype == "content_end":
+            ctype = inner.get("contentType", "")
+            if ctype == "text":
+                # Flush buffered text tokens plus this final full text
+                token_buf_text = [
+                    t for t in token_buf if not t.startswith("\x00")
+                ]
+                token_buf.clear()
+                full = "".join(token_buf_text).strip()
+                if not full:
+                    full = inner.get("text", "").strip()
+                if full:
+                    emit_iter_header_if_pending()
+                    clf.write(f"  {full}\n")
+                    clf.flush()
+            elif ctype == "reasoning":
+                # Drop buffered reasoning tokens; log the full assembled reasoning.
+                # Wrap at 100 chars so it's readable in tail -f without truncation.
+                token_buf.clear()
+                reasoning = inner.get("reasoning", "").strip()
+                if reasoning:
+                    import textwrap as _tw
+                    lines = reasoning.splitlines()
+                    wrapped = []
+                    for line in lines:
+                        if len(line) <= 100:
+                            wrapped.append(line)
+                        else:
+                            wrapped.extend(_tw.wrap(line, width=100,
+                                                    subsequent_indent="    "))
+                    clf.write("  ~ " + "\n    ".join(wrapped) + "\n")
+                    clf.flush()
+            elif ctype == "tool":
+                # Tool result — show outcome without echoing large content
+                tool_name_end = inner.get("toolName", inner.get("name", "?"))
+                output = inner.get("output", "")
+                if isinstance(output, list) and output:
+                    first = output[0] if isinstance(output[0], dict) else {}
+                    if first.get("success") is False or first.get("error"):
+                        # Error result — show the error
+                        err = str(first.get("error", "failed"))[:160]
+                        clf.write(f"  ◀ ✗ {err}\n")
+                    elif tool_name_end in ("read_files", "read_file"):
+                        # Show per-file line counts using " | " prefix markers.
+                        # Cline may return fewer lines than the file contains;
+                        # the count reflects what was actually returned.
+                        counts = []
+                        for item in output:
+                            if isinstance(item, dict):
+                                path   = str(item.get("query", "?")).rsplit("/", 1)[-1]
+                                result = str(item.get("result", ""))
+                                lc     = result.count(" | ")
+                                counts.append(f"{path}:{lc}")
+                        clf.write(f"  ◀ ✓ {', '.join(counts)}\n")
+                    elif tool_name_end in ("run_commands", "execute_command"):
+                        result_text = str(first.get("result", "")).strip()
+                        err_text    = str(first.get("error", "")).strip()
+                        shown = (err_text or result_text)[:160]
+                        shown = " ".join(shown.split())[:160]
+                        status = "✗" if err_text else "✓"
+                        if shown:
+                            clf.write(f"  ◀ {status} {shown}\n")
+                        else:
+                            clf.write(f"  ◀ {status}\n")
+                    elif tool_name_end == "search_codebase":
+                        result_text = str(first.get("result", ""))
+                        # First line summarises the match count
+                        first_line = result_text.splitlines()[0][:120] if result_text else ""
+                        clf.write(f"  ◀ {first_line}\n")
+                    else:
+                        # Generic: show success/failure and first 120 chars
+                        result_text = str(first.get("result", first.get("text", ""))).strip()
+                        shown = " ".join(result_text.split())[:120]
+                        if shown:
+                            clf.write(f"  ◀ ✓ {shown}\n")
+                        else:
+                            clf.write(f"  ◀ ✓\n")
+                elif isinstance(output, str) and output.strip():
+                    shown = " ".join(output.strip().split())[:160]
+                    clf.write(f"  ◀ {shown}\n")
+                else:
+                    clf.write(f"  ◀ ✓\n")
+                clf.flush()
 
         elif itype == "iteration_start":
             token_buf.clear()
@@ -1743,33 +1961,9 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
         elif itype in ("content_block_stop", "message_stop", "iteration_end"):
             flush_tokens()
 
-        elif itype == "tool_use":
-            flush_tokens()
-            emit_iter_header_if_pending()
-            name   = inner.get("name", inner.get("tool", "?"))
-            params = inner.get("input", inner.get("params", {}))
-            hint = ""
-            for key in ("path", "command", "query", "url", "description", "content"):
-                if key in params:
-                    val  = str(params[key])[:80]
-                    hint = f" {key}={val!r}"
-                    break
-            clf.write(f"\n  ▶ {ts} {name}{hint}\n")
-            clf.flush()
-
-        elif itype == "tool_result":
-            flush_tokens()
-            content = inner.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-            summary = str(content).strip().replace("\n", " ")[:120]
-            if summary:
-                clf.write(f"  ◀ {summary}\n")
-                clf.flush()
-
         elif itype == "message_start":
             flush_tokens()
-            clf.write(f"\n  ── {ts} message ──\n")
+            clf.write(f"\n  ── [{ts}] message ──\n")
             clf.flush()
 
     elif etype == "hook_event":
@@ -1786,6 +1980,120 @@ def _write_cline_log(clf, event: dict, token_buf: list[str],
         text = event.get("message", event.get("error", str(event)))[:200]
         clf.write(f"[{ts}] ERROR: {text}\n")
         clf.flush()
+
+    elif etype == "say":
+        # Cline 3.x say events — model prose, tool output, API lifecycle markers
+        say     = event.get("say", "")
+        text    = event.get("text", "").strip()
+        partial = event.get("partial", False)
+
+        if say == "text":
+            if partial:
+                token_buf.append(text)
+            else:
+                if token_buf:
+                    token_buf.append(text)
+                    full = "".join(token_buf).strip()
+                    token_buf.clear()
+                else:
+                    full = text
+                if full:
+                    clf.write(f"  {full}\n")
+                    clf.flush()
+
+        elif say == "command_output":
+            if text:
+                lines = text.replace("\r\n", "\n").splitlines()
+                shown = "\n    ".join(l for l in lines[:5] if l.strip())
+                tail  = f"\n    … +{len(lines) - 5} lines" if len(lines) > 5 else ""
+                clf.write(f"  ◀ {shown}{tail}\n")
+                clf.flush()
+
+        elif say == "completion_result":
+            if text:
+                clf.write(f"\n  ✓ [{ts}] COMPLETE: {text[:120]}\n")
+                clf.flush()
+
+        elif say == "api_req_started":
+            flush_tokens()
+            clf.write(f"\n  ── [{ts}] api request ──\n")
+            clf.flush()
+
+        elif say == "error":
+            flush_tokens()
+            clf.write(f"  ✗ [{ts}] ERROR: {text[:200]}\n")
+            clf.flush()
+
+        elif say == "checkpoint_created":
+            clf.write(f"  · [{ts}] checkpoint\n")
+            clf.flush()
+
+        # say types deliberately skipped (low signal or handled elsewhere):
+        #   reasoning, task, user_feedback, user_feedback_diff,
+        #   api_req_finished, tool_result (come via agent_event in 3.x)
+
+    elif etype == "ask":
+        # Cline 3.x ask events — tool calls and command execution
+        ask  = event.get("ask", "")
+        text = event.get("text", "").strip()
+
+        if ask == "tool":
+            flush_tokens()
+            try:
+                payload = json.loads(text) if text else {}
+                tool    = payload.get("tool", "?")
+                if tool in ("read_file", "write_file", "write_to_file",
+                            "create_file", "list_files", "list_directory",
+                            "delete_file", "apply_diff", "apply_patch"):
+                    hint = f" {payload.get('path', '')}"
+                elif tool == "execute_command":
+                    hint = f" $ {str(payload.get('command', ''))[:100]}"
+                elif tool in ("search_files", "search_replace"):
+                    hint = (f" {payload.get('path', '')}"
+                            f" pattern={payload.get('regex', payload.get('pattern', ''))!r}")
+                elif tool == "attempt_completion":
+                    hint = f" result={str(payload.get('result', ''))[:60]!r}"
+                elif tool == "ask_followup_question":
+                    hint = f" q={str(payload.get('question', ''))[:80]!r}"
+                else:
+                    hint = ""
+                    for key in ("path", "command", "url", "query", "description"):
+                        if key in payload:
+                            hint = f" {key}={str(payload[key])[:80]!r}"
+                            break
+                clf.write(f"\n  ▶ [{ts}] {tool}{hint}\n")
+                clf.flush()
+            except (json.JSONDecodeError, TypeError):
+                clf.write(f"\n  ▶ [{ts}] tool: {text[:120]}\n")
+                clf.flush()
+
+        elif ask == "command":
+            flush_tokens()
+            try:
+                payload = json.loads(text) if text else {}
+                cmd     = payload.get("command", text)[:120]
+            except (json.JSONDecodeError, TypeError):
+                cmd = text[:120]
+            clf.write(f"\n  ▶ [{ts}] execute_command $ {cmd}\n")
+            clf.flush()
+
+        elif ask in ("followup", "request_limit_reached", "resume_task",
+                     "resume_completed_task", "mistake_limit_reached"):
+            flush_tokens()
+            clf.write(f"  ? [{ts}] {ask}: {text[:120]}\n")
+            clf.flush()
+
+        # ask types deliberately skipped: "completion" (final exit ask)
+
+    else:
+        # Unhandled event type — log to cline-skipped.log for inspection.
+        # Remove this block once the event landscape is fully mapped.
+        try:
+            with open(CLINE_SKIPPED_LOG_FILE, "a") as skf:
+                skf.write(f"[{ts}] type={etype!r} keys={list(event.keys())} "
+                          f"raw={json.dumps(event)[:200]}\n")
+        except Exception:
+            pass
 
 
 def run_cline(
@@ -2159,8 +2467,12 @@ def execute_task(
 
             write_forge_plan_report(task, plan_text, plan_attempt)
 
+            # Re-read after write so the thinking-trace check always operates
+            # on the actual file content, not the pre-write stale read.
+            report_text = read_plan_report(task) or report_text
+
             # ── Auto-detect thinking-trace; delete and retry without Discord ─
-            if report_text and _is_thinking_trace(report_text):
+            if _is_thinking_trace(report_text):
                 log_warn(f"[{tid}] Plan report is a thinking trace — "
                          f"deleting and retrying (attempt {plan_attempt})")
                 if dc and approvals_channel_id:
