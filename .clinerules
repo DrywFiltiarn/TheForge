@@ -403,6 +403,24 @@
 #      result in ## Test Results alongside the Linux output.
 #      The toolchain is pinned to Rust 1.95.0 via rust-toolchain.toml; do
 #      not override the channel, and do not relax the pin to make a check pass.
+#
+# 7.8  CONFIG SURFACE SYNC (keeps anvilml.toml authoritative going forward).
+#      Any task that adds, renames, or removes a field on ServerConfig or any of
+#      its nested config structs ([rocm], [frontend], [gpu_selection], [limits],
+#      etc.) MUST, in the SAME task:
+#        a. update ./anvilml.toml — add/rename/remove the matching key, set to its
+#           documented default, with a preceding comment; and
+#        b. update docs/ENVIRONMENT.md §2 (the TOML reference) and, if the field has
+#           an ANVILML_* env override, the env-var table.
+#      The backend/tests/config_reference.rs drift guard (P3-B2) asserts the
+#      committed anvilml.toml key-set matches ServerConfig::default() recursively.
+#      It is enforced LOCALLY as a completion gate: the ACT session runs
+#      `cargo test -p backend --features mock-hardware -- config_reference`
+#      after the test step and before staging, and the task may NOT be marked
+#      COMPLETE while it fails. (It is also part of the workspace suite (7.3) and
+#      the CI run, but local enforcement is authoritative — a task is not done until
+#      it passes on this machine.) Do not weaken or skip the test to make a build
+#      pass — fix anvilml.toml instead.
 
 
 # ── 8. DOCUMENTATION TOOLS ──────────────────────────────────────────────────────
