@@ -2192,11 +2192,9 @@ def run_opencode(
         exit_code = -1
 
         with open(OPENCODE_LOG_FILE, "a") as clf:
-            clf.write(
-                f"\n{'─'*60}\n"
-                f"[{_ts()}] [{task_id}] OpenCode {mode_label} — attempt {attempt}/{OPENCODE_RETRIES}\n"
-                f"{'─'*60}\n"
-            )
+            _hdr = f"[{_ts()}] [{task_id}] OpenCode {mode_label} — attempt {attempt}/{OPENCODE_RETRIES}"
+            _sep = "─" * len(_hdr)
+            clf.write(f"\n{_sep}\n{_hdr}\n{_sep}\n")
         _update_context_display(task_id, mode_label, 0.0, 0, OPENCODE_CONTEXT_WINDOW,
                                 session_start=session_start)
 
