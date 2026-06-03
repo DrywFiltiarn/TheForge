@@ -87,13 +87,20 @@ Then fill in `forge/forge.env` and create the two Discord channels.
 
 ### Get IDs
 Right-click server icon → Copy Server ID (requires Developer Mode in Discord Settings → Advanced).
+Right-click your avatar -> Copy User ID (requires Developer Mode in Discord Settings → Advanced).
+Right-click forge-reports channel -> Copy Channel ID (requires Developer Mode in Discord Settings → Advanced).
+Right-click forge-approvals channel -> Copy Channel ID (requires Developer Mode in Discord Settings → Advanced).
 
 ### forge.env
 ```bash
 export FORGE_DISCORD_TOKEN="your-bot-token"
 export FORGE_DISCORD_GUILD_ID="your-server-id"
 export FORGE_DISCORD_REPORTS_CHANNEL="forge-reports"
+export FORGE_DISCORD_REPORTS_CHANNEL_ID="forge-reports-id"
 export FORGE_DISCORD_APPROVALS_CHANNEL="forge-approvals"
+export FORGE_DISCORD_APPROVALS_CHANNEL_ID="forge-approvals-id"
+export FORGE_DISCORD_OWNER_ID="your-user-id"
+
 ```
 
 ---
