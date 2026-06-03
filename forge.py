@@ -370,8 +370,8 @@ OPENCODE_CONTEXT_WINDOW = int(os.environ.get("FORGE_CONTEXT_WINDOW", str(262144)
 # llama-swap applies the correct sampling params server-side via setParamsByID.
 # planning: used for STEP 1 (plan mode, all tasks) — forge-plan agent
 # coding:   used for STEP 2-4 (act mode, all tasks) — forge-act agent
-MODEL_PLANNING = os.environ.get("FORGE_MODEL_PLANNING", "openai-compatible/Qwen3.6-35B-A3B:planning")
-MODEL_CODING   = os.environ.get("FORGE_MODEL_CODING",   "openai-compatible/Qwen3.6-35B-A3B:coding")
+MODEL_PLANNING = os.environ.get("FORGE_MODEL_PLANNING", "llama.cpp/Qwen3.6-35B-A3B:planning")
+MODEL_CODING   = os.environ.get("FORGE_MODEL_CODING",   "llama.cpp/Qwen3.6-35B-A3B:coding")
 
 # Approval
 APPROVAL_POLL_INTERVAL = int(os.environ.get("FORGE_POLL_INTERVAL", "10"))

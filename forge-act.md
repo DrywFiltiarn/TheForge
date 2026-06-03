@@ -2,10 +2,10 @@
 description: "Forge ACT agent — implements an approved plan, runs tests to zero failures, stages changes, writes the implementation report. No commits, no pushes."
 model: llama.cpp/Qwen3.6-35B-A3B:coding
 permissions:
-  - read
-  - edit
-  - glob
-  - grep
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
   webfetch: deny
   bash:
     "*": deny
