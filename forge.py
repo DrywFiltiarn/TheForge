@@ -1421,24 +1421,33 @@ def _bullet_lines(text: str, max_lines: int = 6) -> str:
     lines = [l.strip("- •\t ") for l in text.splitlines() if l.strip("- •\t ")]
     return "\n".join(f"• {l}" for l in lines[:max_lines])
 
-def format_report_caption(task: dict, section: str) -> str:
+def format_report_caption(task: dict, section: str, dur: str = "") -> str:
     """
-    One-line caption posted above the attached .md file in #forge-reports.
+    Caption posted above the attached .md file in #forge-reports.
     The full report is in the attachment — no extraction needed.
     """
-    tid   = task["id"]
-    desc  = task["description"]
-    phase = task.get("phase", "?")
-    icon  = "📋" if section == "PLAN" else "📦"
-    gate  = "Approval request in #forge-approvals"
-    return (
-        f"{icon} **{section} REPORT — `{tid}` (Phase {phase})**\n"
-        f"_{desc}_\n"
-        f"_{gate}_"
-    )
+    tid     = task["id"]
+    desc    = task["description"]
+    phase   = task.get("phase", "?")
+    project = task.get("project", "(unknown)")
+    prereqs = ", ".join(task.get("prereqs", [])) or "none"
+    icon    = "📋" if section == "PLAN" else "📦"
+    label   = "Planning" if section == "PLAN" else "Implementation"
+    gate    = "Approval request in #forge-approvals"
+
+    parts = [
+        f"{icon} **{section} REPORT — `{tid}` (Phase {phase})**",
+        desc,
+        f"Project: `{project}` · Prereqs: `{prereqs}`",
+    ]
+    if dur:
+        parts.append(f"⏱ {label}: `{dur}`")
+    parts.append(f"_{gate}_")
+    return "\n".join(parts)
 
 def format_plan_approval_request(task: dict, attempt: int,
-                                  feedback: str = "") -> str:
+                                  feedback: str = "",
+                                  plan_dur: str = "") -> str:
     """
     Minimal approval request for #forge-approvals.
     Full plan is in the attached file in #forge-reports — nothing is extracted here.
@@ -1454,9 +1463,12 @@ def format_plan_approval_request(task: dict, attempt: int,
 
     parts = [
         header,
-        f"**{desc}**",
+        desc,
         f"Project: `{project}` · Prereqs: `{prereqs}`",
     ]
+
+    if plan_dur:
+        parts.append(f"⏱ Planning: `{plan_dur}`")
 
     if feedback:
         parts += ["", f"📝 _Revision feedback: {feedback}_"]
@@ -1470,31 +1482,35 @@ def format_plan_approval_request(task: dict, attempt: int,
 
     return "\n".join(parts)
 
-def format_push_approval_request(task: dict, commit_info: dict) -> str:
+def format_push_approval_request(task: dict, commit_info: dict,
+                                  act_dur: str = "") -> str:
     """
     Format a push approval request for #forge-approvals.
     Includes task ID for cross-referencing with #forge-reports.
     """
-    tid  = task["id"]
-    desc = task["description"]
+    tid     = task["id"]
+    desc    = task["description"]
+    project = task.get("project", "(unknown)")
+    prereqs = ", ".join(task.get("prereqs", [])) or "none"
 
     parts = [
-        f"**🔐 PUSH APPROVAL REQUEST — Task `{tid}`**",
-        f"",
-        f"**Description:** {desc}",
-        f"*Full implementation report is in #forge-reports — search for `{tid}`.*",
-        f"",
+        f"**🔐 PUSH APPROVAL — `{tid}`**",
+        desc,
+        f"Project: `{project}` · Prereqs: `{prereqs}`",
     ]
 
+    if act_dur:
+        parts.append(f"⏱ Implementation: `{act_dur}`")
+
+    parts += ["", f"_Full implementation report in #forge-reports → search `{tid}`_", ""]
+
     for repo, info in commit_info.items():
-        if info.get("commits"):
-            parts.append(f"**{repo} commits:**")
-            for c in info["commits"][:3]:
-                parts.append(f"  `{c}`")
-        if info.get("changed_files"):
-            files = info["changed_files"][:8]
-            parts.append(f"**{repo} files:** {', '.join(files)}")
-        parts.append("")
+        commits = info.get("commits", [])
+        if commits:
+            commit_lines = "\n".join(commits[:5])
+            parts.append(f"**{repo}:**")
+            parts.append(f"```\n{commit_lines}\n```")
+            parts.append("")
 
     parts += [
         f"✅ **React to confirm** — task marked complete.",
@@ -1503,28 +1519,28 @@ def format_push_approval_request(task: dict, commit_info: dict) -> str:
 
     return "\n".join(parts)
 
-def format_implementation_caption(task: dict, commit_info: dict) -> str:
+def format_implementation_caption(task: dict, commit_info: dict,
+                                   act_dur: str = "") -> str:
     """
     Caption posted above the attached implementation report .md file in #forge-reports.
     Shows commit hashes only — the full report is in the attachment.
     """
-    tid   = task["id"]
-    desc  = task["description"]
-    phase = task.get("phase", "?")
+    tid     = task["id"]
+    desc    = task["description"]
+    phase   = task.get("phase", "?")
+    project = task.get("project", "(unknown)")
+    prereqs = ", ".join(task.get("prereqs", [])) or "none"
 
     parts = [
         f"**📦 IMPLEMENTATION REPORT — `{tid}` (Phase {phase})**",
-        f"_{desc}_",
-        f"_Push approval request in #forge-approvals_",
-        "",
+        desc,
+        f"Project: `{project}` · Prereqs: `{prereqs}`",
     ]
 
-    for repo, info in commit_info.items():
-        if info.get("commits"):
-            parts.append(f"**{repo}:**")
-            for c in info["commits"][:3]:
-                parts.append(f"  `{c}`")
-            parts.append("")
+    if act_dur:
+        parts.append(f"⏱ Implementation: `{act_dur}`")
+
+    parts.append(f"_Push approval request in #forge-approvals_")
 
     return "\n".join(parts)
 
@@ -2553,7 +2569,8 @@ def execute_task(
                     state["plan_report_message_id"] = dry_run_report_msg_id
                     save_state(state)
             else:
-                caption      = format_report_caption(task, "PLAN")
+                plan_dur_cap = _fmt_duration(t_plan_end - t_plan_start) if t_plan_end > 0 else ""
+                caption      = format_report_caption(task, "PLAN", dur=plan_dur_cap)
                 filename     = f"{tid}_plan.md"
                 report_msg_id = dc.send_file(
                     reports_channel_id, caption, filename, full_report
@@ -2565,7 +2582,8 @@ def execute_task(
 
         # ── Post approval request to #forge-approvals ─────────────────────────
         if dc and approvals_channel_id:
-            approval_text   = format_plan_approval_request(task, plan_attempt, feedback)
+            plan_dur_str    = _fmt_duration(t_plan_end - t_plan_start) if t_plan_end > 0 else ""
+            approval_text   = format_plan_approval_request(task, plan_attempt, feedback, plan_dur=plan_dur_str)
             approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
             if approval_msg_id:
                 dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
@@ -2708,7 +2726,8 @@ def execute_task(
                 state["impl_report_message_id"] = dry_run_impl_msg_id
                 save_state(state)
         else:
-            caption     = format_implementation_caption(task, commit_info)
+            act_dur_str  = _fmt_duration(t_act_end - t_act_start) if t_act_end > 0 else ""
+            caption     = format_implementation_caption(task, commit_info, act_dur=act_dur_str)
             filename    = f"{tid}_implement.md"
             impl_msg_id = dc.send_file(
                 reports_channel_id, caption, filename, full_report_text
@@ -2720,7 +2739,8 @@ def execute_task(
 
     # ── Post push approval request to #forge-approvals (polled) ──────────────
     if dc and approvals_channel_id:
-        approval_text   = format_push_approval_request(task, commit_info)
+        act_dur_str     = _fmt_duration(t_act_end - t_act_start) if t_act_end > 0 else ""
+        approval_text   = format_push_approval_request(task, commit_info, act_dur=act_dur_str)
         approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
         if approval_msg_id:
             dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
