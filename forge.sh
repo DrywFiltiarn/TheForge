@@ -37,7 +37,7 @@ source ".venv/bin/activate"
 
 SESSION_NAME="cline-workspace"
 FORGE_LOG="$SCRIPT_DIR/forge.log"
-CLINE_LOG="$SCRIPT_DIR/cline.log"
+CLINE_LOG="$SCRIPT_DIR/opencode.log"
 CONTEXT_LOG="$SCRIPT_DIR/context.log"
 
 # Build a properly quoted argument string to forward to forge.py

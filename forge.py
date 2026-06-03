@@ -2,8 +2,8 @@
 """
 forge.py — SindriStudio Autonomous Development Orchestrator
 
-Drives atomic Cline CLI sessions through the 4-step plan/implement/test/commit
-cycle defined in .clinerules, with Discord approval gates and full resume
+Drives atomic OpenCode CLI sessions through the 4-step plan/implement/test/commit
+cycle defined by the forge agent files, with Discord approval gates and full resume
 capability after any interruption or llama.cpp failure.
 
 Discord channel roles:
@@ -78,9 +78,9 @@ def _encode_emoji(emoji: str) -> str:
 FORGE_DIR        = Path(__file__).parent.resolve()   # wherever forge.py lives
 REPOS_FILE       = FORGE_DIR / "repos.json"
 LOG_FILE         = FORGE_DIR / "forge.log"
-CLINE_LOG_FILE   = FORGE_DIR / "cline.log"
+OPENCODE_LOG_FILE   = FORGE_DIR / "opencode.log"
 CONTEXT_LOG_FILE = FORGE_DIR / "context.log"
-CLINE_SKIPPED_LOG_FILE = FORGE_DIR / "cline-skipped.log"  # temporary: unhandled event types
+OPENCODE_SKIPPED_LOG_FILE = FORGE_DIR / "opencode-skipped.log"  # unhandled event types
 
 # Resolved in main() after --repo is validated.
 # Points to <repo>/.forge/state.json — scoped to the active repository.
@@ -201,12 +201,12 @@ def resolve_project_tasks_dir(project: str) -> Path:
 
 
 def repo_reports_dir(project: str) -> Path:
-    """<repo>/.forge/reports/ — matches .clinerules section 11.1."""
+    """<repo>/.forge/reports/ — see docs/FORGE_AGENT_RULES.md §10."""
     return resolve_project_path(project) / ".forge" / "reports"
 
 
 def repo_state_dir(project: str) -> Path:
-    """<repo>/.forge/state/ — matches .clinerules section 11.2."""
+    """<repo>/.forge/state/ — see docs/FORGE_AGENT_RULES.md §10."""
     return resolve_project_path(project) / ".forge" / "state"
 
 
@@ -222,15 +222,15 @@ def ensure_repo_forge_dirs(project: str) -> None:
 
 def write_current_task_file(task: dict, step: str, status: str) -> None:
     """
-    Write .forge/state/CURRENT_TASK.md before invoking Cline.
+    Write .forge/state/CURRENT_TASK.md before invoking OpenCode.
 
-    Cline reads this file at session start (.clinerules §1) and verifies that
+    OpenCode reads this file at session start (agent §1) and verifies that
     the Task field matches the injected TASK_ID.  The Forge must write it before
-    every Cline invocation so the identity check always passes.
+    every OpenCode invocation so the identity check always passes.
 
     step   — "PLAN" or "IMPLEMENT"
-    status — "IN_PROGRESS" when written by The Forge before Cline runs.
-             Cline overwrites this with COMPLETE, PARTIAL, or BLOCKED at
+    status — "IN_PROGRESS" when written by The Forge before OpenCode runs.
+             OpenCode overwrites this with COMPLETE, PARTIAL, or BLOCKED at
              session end.  The Forge never reads back this file — it uses
              state.json exclusively.
     """
@@ -355,18 +355,23 @@ DISCORD_APPROVALS_CHANNEL_ID = "1509917666889044068"
 # User IDs are permanent; usernames can be changed.
 FORGE_OWNER_ID = "334811986019745792"
 
-# Cline
-CLINE_BIN = os.environ.get("FORGE_CLINE_BIN", "cline")
-CLINE_TIMEOUT = int(os.environ.get("FORGE_CLINE_TIMEOUT", str(60 * 120)))  # 120 min
-CLINE_RETRIES = int(os.environ.get("FORGE_CLINE_RETRIES", "3"))
-CLINE_RETRY_DELAY = int(os.environ.get("FORGE_CLINE_RETRY_DELAY", "60"))
+# OpenCode
+OPENCODE_BIN   = os.environ.get("FORGE_OPENCODE_BIN", "opencode")
+OPENCODE_TIMEOUT = int(os.environ.get("FORGE_OPENCODE_TIMEOUT", str(60 * 120)))  # 120 min
+OPENCODE_RETRIES = int(os.environ.get("FORGE_OPENCODE_RETRIES", "3"))
+OPENCODE_RETRY_DELAY = int(os.environ.get("FORGE_OPENCODE_RETRY_DELAY", "60"))
 
-# Model IDs — llama-swap variants, selected via -M flag.
-# Sampling parameters are applied server-side by llama-swap's setParamsByID.
-# planning: used for STEP 1 (Cline plan mode) across all tasks
-# coding:   used for STEP 2-4 (Cline act mode) across all tasks
-MODEL_PLANNING = os.environ.get("FORGE_MODEL_PLANNING", "Qwen3.6-35B-A3B:planning")
-MODEL_CODING   = os.environ.get("FORGE_MODEL_CODING",   "Qwen3.6-35B-A3B:coding")
+# Context window size for the running model (tokens).
+# Used to compute context usage percentage in context.log.
+# Default: 262144 (256k) — matches Qwen3 35B A3B at 256k context.
+OPENCODE_CONTEXT_WINDOW = int(os.environ.get("FORGE_CONTEXT_WINDOW", str(262144)))
+
+# Model IDs — OpenCode provider/model format, passed via --model flag.
+# llama-swap applies the correct sampling params server-side via setParamsByID.
+# planning: used for STEP 1 (plan mode, all tasks) — forge-plan agent
+# coding:   used for STEP 2-4 (act mode, all tasks) — forge-act agent
+MODEL_PLANNING = os.environ.get("FORGE_MODEL_PLANNING", "openai-compatible/Qwen3.6-35B-A3B:planning")
+MODEL_CODING   = os.environ.get("FORGE_MODEL_CODING",   "openai-compatible/Qwen3.6-35B-A3B:coding")
 
 # Approval
 APPROVAL_POLL_INTERVAL = int(os.environ.get("FORGE_POLL_INTERVAL", "10"))
@@ -1082,7 +1087,7 @@ def validate_commit_messages(task: dict) -> list[str]:
     """
     Check recent commits in the task's project repo against Conventional Commits.
     Returns a list of warning strings (empty = all good).
-    Convention: type(scope): description   (.clinerules section 5.3)
+    Convention: type(scope): description   (docs/FORGE_AGENT_RULES.md §3.4)
     """
     VALID_TYPES  = {"feat", "fix", "chore", "docs", "test", "refactor"}
     VALID_SCOPES = {
@@ -1164,7 +1169,7 @@ def _forge_push(task: dict) -> bool:
     """
     Push the task's project repo to origin/<branch>.
     Called by The Forge after push approval.
-    Cline stages files; The Forge commits and is the only actor that pushes.
+    OpenCode stages files; The Forge commits and is the only actor that pushes.
     Returns True on success.
     """
     project = task["project"]
@@ -1200,15 +1205,15 @@ def _forge_commit(task: dict) -> Optional[str]:
     Stage and commit everything in the task's project repo.
 
     Staged content:
-      - All source/test/CI changes made by Cline
+      - All source/test/CI changes made by OpenCode
       - .forge/reports/<task_id>_plan.md
       - .forge/reports/<task_id>_implement.md
       - .forge/state/CURRENT_TASK.md
 
     The commit message is derived from the task description and uses
     Conventional Commits format.  The Forge is the sole author of this
-    commit; Cline is not permitted to commit in the project repo during
-    the ACT session (Cline only stages; The Forge commits and pushes).
+    commit; OpenCode is not permitted to commit in the project repo during
+    the ACT session (OpenCode only stages; The Forge commits and pushes).
 
     Returns the short commit hash on success, None on error or nothing-to-commit.
     """
@@ -1258,7 +1263,7 @@ def _forge_commit(task: dict) -> Optional[str]:
             f"Phase:       {task.get('phase', '?')}\n"
             f"Reports:     .forge/reports/{task_id}_plan.md\n"
             f"             .forge/reports/{task_id}_implement.md\n"
-            f"Committed by Forge orchestrator (not Cline)"
+            f"Committed by Forge orchestrator (not OpenCode)"
         )
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg],
@@ -1281,7 +1286,7 @@ def _forge_commit(task: dict) -> Optional[str]:
 # ─── Disk report files ─────────────────────────────────────────────────────────
 # Reports live inside the target repository under .forge/reports/.
 # This keeps the reports version-controlled alongside the code they describe
-# and matches .clinerules sections 11.1 and 11.2.
+# and matches docs/FORGE_AGENT_RULES.md §10.
 
 def plan_report_path(task: dict) -> Path:
     """<repo>/.forge/reports/<TASK_ID>_plan.md"""
@@ -1295,8 +1300,8 @@ def write_forge_plan_report(task: dict, plan_text: str, attempt: int) -> Path:
     """
     Ensure <repo>/.forge/reports/<TASK_ID>_plan.md exists on disk.
 
-    If Cline wrote the file during the PLAN session it is left untouched.
-    If Cline failed to write it The Forge writes a minimal valid report from
+    If OpenCode wrote the file during the PLAN session it is left untouched.
+    If OpenCode failed to write it The Forge writes a minimal valid report from
     whatever plan text was captured from stdout, so the Discord attachment
     and approval flow can still proceed.
 
@@ -1325,7 +1330,7 @@ def write_forge_plan_report(task: dict, plan_text: str, attempt: int) -> Path:
         log(f"[{task['id']}] Plan report written to "
             f"{report_path.relative_to(resolve_project_path(task['project']))}")
     else:
-        log(f"[{task['id']}] Plan report already exists (written by Cline) — not overwriting")
+        log(f"[{task['id']}] Plan report already exists (written by OpenCode) — not overwriting")
 
     return report_path
 
@@ -1355,7 +1360,7 @@ def _is_thinking_trace(report_text: str) -> bool:
 
     A valid plan must:
     1. Start with "# Plan Report:" as its first non-empty line.
-    2. Contain ALL three mandatory section headers from .clinerules §3.
+    2. Contain ALL three mandatory section headers from docs/FORGE_AGENT_RULES.md (plan report format).
 
     Thinking traces typically start with first-person narration ("I'll", "Now",
     "Let me", etc.) and lack the required structural sections.
@@ -1550,7 +1555,7 @@ def wait_for_approval(
                 dc.send_message(
                     approvals_channel_id,
                     f"✅ **Approval registered** — reaction picked up from "
-                    f"{u.get('username', 'owner')}. Cline is proceeding."
+                    f"{u.get('username', 'owner')}. OpenCode is proceeding."
                 )
                 return True, ""
             else:
@@ -1581,13 +1586,13 @@ def wait_for_approval(
                     dc.send_message(
                         approvals_channel_id,
                         f"❌ **Rejection registered** — feedback received: _{feedback}_\n"
-                        f"Cline will revise the plan."
+                        f"OpenCode will revise the plan."
                     )
                 else:
                     dc.send_message(
                         approvals_channel_id,
                         f"❌ **Rejection registered** — no feedback reply found.\n"
-                        f"Cline will re-plan. Reply with feedback before reacting next time "
+                        f"OpenCode will re-plan. Reply with feedback before reacting next time "
                         f"so the revision has direction."
                     )
                 return False, feedback
@@ -1606,21 +1611,73 @@ def wait_for_approval(
     log_warn(f"Approval timeout after {timeout}s")
     return False, "Approval timed out — no response received"
 
-# ─── Cline subprocess ─────────────────────────────────────────────────────────
+# ─── OpenCode subprocess ──────────────────────────────────────────────────────
 
-def build_cline_cmd(prompt: str, plan_mode: bool, cwd: Path,
-                    model_id: Optional[str] = None) -> list[str]:
-    cmd = [CLINE_BIN]
-    if plan_mode:
-        cmd.append("-p")
-    cmd.extend([
-        "--json",
-        "--auto-approve=true",
-        "--timeout", str(CLINE_TIMEOUT),
-        "--cwd", str(cwd),
-    ])
+# Agent file names (beside forge.py).  The Forge syncs these to
+# ~/.config/opencode/agents/ at startup via ensure_opencode_agents().
+AGENT_PLAN_NAME = "forge-plan"
+AGENT_ACT_NAME  = "forge-act"
+
+def _opencode_agents_dir() -> Path:
+    """
+    Return the platform-appropriate OpenCode global agents directory.
+    Linux/macOS: ~/.config/opencode/agents/
+    Windows:     %APPDATA%\\opencode\\agents\\
+    Created if absent.
+    """
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        d = base / "opencode" / "agents"
+    else:
+        d = Path.home() / ".config" / "opencode" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def ensure_opencode_agents() -> None:
+    """
+    Sync forge-plan.md and forge-act.md from the forge directory to
+    ~/.config/opencode/agents/ (global OpenCode agent location).
+
+    The forge directory is the single source of truth.  Files are only
+    written when the hash differs, so re-runs are cheap.
+    """
+    agents_dir = _opencode_agents_dir()
+    for name in (f"{AGENT_PLAN_NAME}.md", f"{AGENT_ACT_NAME}.md"):
+        src = FORGE_DIR / name
+        dst = agents_dir / name
+        if not src.exists():
+            log_warn(f"Agent file not found: {src} — OpenCode PLAN/ACT mode may fail")
+            continue
+        src_text = src.read_text(encoding="utf-8")
+        if dst.exists() and dst.read_text(encoding="utf-8") == src_text:
+            continue  # already up to date
+        dst.write_text(src_text, encoding="utf-8")
+        log(f"Synced agent file → {dst}")
+
+
+def build_opencode_cmd(prompt: str, plan_mode: bool, cwd: Path,
+                       model_id: Optional[str] = None) -> list[str]:
+    """
+    Build the opencode run command list.
+
+    plan_mode=True  → uses the forge-plan agent (read-only, plan report only)
+    plan_mode=False → uses the forge-act agent (full permissions, implementation)
+
+    OpenCode's --dangerously-skip-permissions auto-approves all tool calls,
+    equivalent to --auto-approve=true in prior tooling.  Permission scoping is enforced
+    by the agent frontmatter, not by the CLI flag.
+    """
+    agent = AGENT_PLAN_NAME if plan_mode else AGENT_ACT_NAME
+    cmd = [
+        OPENCODE_BIN, "run",
+        "--format", "json",
+        "--dangerously-skip-permissions",
+        "--dir", str(cwd),
+        "--agent", agent,
+    ]
     if model_id:
-        cmd.extend(["-M", model_id])
+        cmd.extend(["--model", model_id])
     cmd.append(prompt)
     return cmd
 
@@ -1629,7 +1686,7 @@ def _update_context_display(task_id: str, mode: str, pct: float,
     """
     Overwrite context.log with the current context usage status.
     This file is tailed in the fourth tmux pane for live monitoring.
-    Color coding mirrors the .clinerules threshold: green <50%, yellow 50-65%, red >=65%.
+    Color coding: green <50%, yellow 50–65%, red >=65%.
     """
     if pct >= 65:
         bar_char = "█"
@@ -1671,13 +1728,13 @@ def _update_context_display(task_id: str, mode: str, pct: float,
 
 def _summarise_command(cmd: str) -> str:
     """
-    Return a short human-readable description of a shell command for cline.log.
+    Return a short human-readable description of a shell command for opencode.log.
     Avoids truncating mid-token by recognising common patterns.
     """
     import re as _re
     s = cmd.strip()
 
-    # Bare redirect: > /path/to/file  (Cline writing a file with no command)
+    # Bare redirect: > /path/to/file  (agent writing a file with no command)
     m = _re.match(r'^>\s*(\S+)', s)
     if m:
         return f"write → {m.group(1).rsplit('/', 1)[-1]}"
@@ -1718,385 +1775,211 @@ def _summarise_command(cmd: str) -> str:
     return s[:80]
 
 
-def _write_cline_log(clf, event: dict, token_buf: list[str],
-                     task_id: str = "", mode: str = "") -> None:
+def _write_opencode_log(clf, event: dict, token_buf: list[str],
+                        task_id: str = "", mode: str = "",
+                        session_tokens: dict = None) -> None:
     """
-    Write a human-readable line to cline.log for a single Cline NDJSON event.
-    Also extracts context usage percentage from agent_event/usage events
-    and writes it to context.log for live monitoring in the tmux context pane.
+    Write a human-readable line to opencode.log for a single OpenCode NDJSON event.
+    Also maintains cumulative token counts and writes context usage to context.log.
 
-    Supports both Cline 3.x say/ask schema and legacy agent_event schema.
-    The agent_event/usage branch is the authoritative source for context tracking
-    and must not be modified.
+    OpenCode --format json event types (from observed schema):
+      step_start   — iteration begins (suppressed — noise with no user value)
+      tool_use     — tool call + result combined; tool name, input, output, timing
+      step_finish  — iteration ends; tokens, cost, reason
+                     reason="tool-calls" -> suppressed (next tool call follows immediately)
+                     reason="stop"       -> model finished; emit compact token summary
+      text         — model prose output (narration, reasoning commentary, final answer)
+      error        — session-level error from OpenCode or the provider
 
-    Token accumulation: content_start events carry individual tokens (~one word).
-    We buffer them and flush as a complete paragraph when a non-token event
-    arrives, so tail -f shows readable prose rather than one JSON blob per word.
+    Token tracking:
+      step_finish carries per-step token counts. Cumulative input tokens are used
+      to approximate context growth against OPENCODE_CONTEXT_WINDOW.
 
-    Event type mapping:
-      agent_event / usage               → update context.log (DO NOT CHANGE)
-      agent_event / content_start       → accumulate tokens, flush on paragraph break
-      agent_event / content_block_stop  → flush token buffer as a line
-      agent_event / tool_use            → "  ▶ tool_name(params)"
-      agent_event / tool_result         → "  ◀ result summary"
-      agent_event / message_start       → iteration separator
-      say / text                        → model prose (Cline 3.x)
-      say / command_output              → "  ◀ ..." subprocess output
-      say / completion_result           → "  ✓ COMPLETE"
-      say / api_req_started             → "  ── api request ──"
-      say / error                       → "  ✗ ERROR"
-      ask / tool                        → "  ▶ tool hint"
-      ask / command                     → "  ▶ execute_command $ ..."
-      system / info / error             → prefixed plain text
-      anything else                     → skip (noise)
+      session_tokens dict (mutated in-place by caller):
+        "input_total"    — cumulative input tokens this session
+        "output_total"   — cumulative output tokens this session
+        "reasoning_total"— cumulative reasoning tokens (non-zero if model emits thinking blocks)
+        "cache_read"     — cumulative cache read tokens
+        "cache_write"    — cumulative cache write tokens
+        "cost_total"     — cumulative cost (float, USD)
+        "steps"          — number of step_finish events seen
+        "_last_logged_pct" — last context % that triggered a threshold log line
+
+    Log structure goal: readable narrative flow.
+      - Model prose (text events) appears inline between tool calls
+      - Tool calls show a call / result as a pair with no surrounding separators
+      - Context % appears only when crossing 50% / 65% thresholds, and at session end
+      - Errors are always visible with X prefix and also written to forge.log
     """
+    if session_tokens is None:
+        session_tokens = {}
+
     etype = event.get("type", "")
 
-    # ts field is a Unix-ms integer in Cline 3.x say/ask events,
-    # or an ISO-8601 string (e.g. "2026-05-30T19:12:51.942Z") in agent_event wrappers.
-    raw_ts = event.get("ts")
+    # Timestamp: OpenCode uses Unix milliseconds in the "timestamp" field
+    raw_ts = event.get("timestamp")
     if isinstance(raw_ts, (int, float)) and raw_ts > 1_000_000_000_000:
-        # Unix milliseconds (Cline 3.x say/ask) — convert to local time
         ts = datetime.fromtimestamp(raw_ts / 1000, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
-    elif isinstance(raw_ts, str):
-        # ISO-8601 UTC string — parse and convert to local time
-        _m = re.search(r'T(\d{2}:\d{2}:\d{2})', raw_ts)
-        if _m:
-            try:
-                _dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                ts = _dt.astimezone().strftime("%H:%M:%S")
-            except ValueError:
-                ts = _m.group(1)  # fallback to raw UTC if parse fails
-        else:
-            ts = ""
     else:
-        ts = ""
+        ts = _ts()[11:19]  # fallback: HH:MM:SS from forge clock
 
     def flush_tokens() -> None:
         if token_buf:
-            # Check for deferred iteration header sentinel
-            if len(token_buf) == 1 and token_buf[0].startswith("\x00ITER\x00"):
-                token_buf.clear()
-                return
-            # Strip all sentinel tokens (ITER, REASONING) — only emit plain text
-            text = "".join(
-                t for t in token_buf if not t.startswith("\x00")
-            ).strip()
+            text = "".join(t for t in token_buf if not t.startswith("\x00")).strip()
             if text:
                 clf.write(f"  {text}\n")
                 clf.flush()
             token_buf.clear()
 
-    def emit_iter_header_if_pending() -> None:
-        """If a deferred iteration header is in the buffer, emit it now."""
-        for i, t in enumerate(token_buf):
-            if t.startswith("\x00ITER\x00"):
-                parts = t.split("\x00")
-                ts_val   = parts[2] if len(parts) > 2 else ""
-                iter_val = parts[3] if len(parts) > 3 else "?"
-                clf.write(f"\n  ── {ts_val} iteration {iter_val} ──\n")
-                clf.flush()
-                token_buf.pop(i)
-                return
+    # step_start: suppressed — no user value, tool calls provide all structure
+    if etype == "step_start":
+        flush_tokens()
 
-    if etype == "agent_event":
-        inner = event.get("event", {})
-        itype = inner.get("type", "")
-
-        if itype == "usage":
-            try:
-                input_tokens = int(inner.get("inputTokens", 0))
-                total        = int(inner.get("contextWindow", 262144))
-                if total == 0:
-                    total = 262144
-                pct = (input_tokens / total) * 100.0
-                _update_context_display(task_id, mode, pct, input_tokens, total)
-                if pct >= 65:
-                    clf.write(f"  ⚠  [{ts}] CONTEXT {pct:.1f}% ({input_tokens:,} tokens) — APPROACHING LIMIT\n")
-                    clf.flush()
-                elif pct >= 50:
-                    clf.write(f"  ◉  [{ts}] Context {pct:.1f}% ({input_tokens:,} tokens)\n")
-                    clf.flush()
-            except (ValueError, TypeError):
-                pass
-
-        elif itype == "content_start":
-            ctype = inner.get("contentType", "")
-            if ctype == "text":
-                token_buf.append(inner.get("text", ""))
-            elif ctype == "reasoning":
-                # Accumulate reasoning into a separate buffer key using sentinel
-                token_buf.append(f"\x00REASONING\x00{inner.get('reasoning', '')}")
-            elif ctype == "tool":
-                # Tool call start — emit immediately, don't buffer
-                flush_tokens()
-                emit_iter_header_if_pending()
-                tool_name = inner.get("toolName", inner.get("name", "?"))
-                params    = inner.get("input", {})
-                if not isinstance(params, dict):
-                    params = {}
-
-                if tool_name in ("read_file", "write_file", "write_to_file",
-                                 "create_file", "list_files", "list_directory",
-                                 "delete_file", "apply_diff", "apply_patch"):
-                    hint = f" {params.get('path', '')}"
-                elif tool_name == "read_files":
-                    # input: {"files": [{"path": "..."}]}
-                    files = params.get("files", [])
-                    if isinstance(files, list) and files:
-                        paths = ", ".join(f.get("path", "?") for f in files[:3])
-                        hint = f" {paths}"
-                    else:
-                        hint = ""
-                elif tool_name in ("run_commands", "execute_command"):
-                    # input: {"commands": ["..."]} or {"command": "..."}
-                    cmds = params.get("commands", [])
-                    raw_cmd = str(cmds[0]) if (isinstance(cmds, list) and cmds) else str(params.get("command", ""))
-                    hint = f" $ {_summarise_command(raw_cmd)}"
-                elif tool_name in ("search_files", "search_replace", "search_codebase"):
-                    q = params.get("query", params.get("queries", params.get("pattern", "")))
-                    if isinstance(q, list):
-                        q = ", ".join(str(x) for x in q[:2])
-                    hint = f" {str(q)[:80]!r}"
-                elif tool_name == "attempt_completion":
-                    result_val = str(params.get("result", ""))[:60]
-                    hint = f" result={result_val!r}"
-                else:
-                    hint = ""
-                    for key in ("path", "command", "url", "query", "description"):
-                        if key in params:
-                            hint = f" {key}={str(params[key])[:80]!r}"
-                            break
-                clf.write(f"\n  ▶ [{ts}] {tool_name}{hint}\n")
-                clf.flush()
-
-        elif itype == "content_end":
-            ctype = inner.get("contentType", "")
-            if ctype == "text":
-                # Flush buffered text tokens plus this final full text
-                token_buf_text = [
-                    t for t in token_buf if not t.startswith("\x00")
-                ]
-                token_buf.clear()
-                full = "".join(token_buf_text).strip()
-                if not full:
-                    full = inner.get("text", "").strip()
-                if full:
-                    emit_iter_header_if_pending()
-                    clf.write(f"  {full}\n")
-                    clf.flush()
-            elif ctype == "reasoning":
-                # Drop buffered reasoning tokens; log the full assembled reasoning.
-                # Wrap at 100 chars so it's readable in tail -f without truncation.
-                token_buf.clear()
-                reasoning = inner.get("reasoning", "").strip()
-                if reasoning:
-                    import textwrap as _tw
-                    lines = reasoning.splitlines()
-                    wrapped = []
-                    for line in lines:
-                        if len(line) <= 100:
-                            wrapped.append(line)
-                        else:
-                            wrapped.extend(_tw.wrap(line, width=100,
-                                                    subsequent_indent="    "))
-                    clf.write("  ~ " + "\n    ".join(wrapped) + "\n")
-                    clf.flush()
-            elif ctype == "tool":
-                # Tool result — show outcome without echoing large content
-                tool_name_end = inner.get("toolName", inner.get("name", "?"))
-                output = inner.get("output", "")
-                if isinstance(output, list) and output:
-                    first = output[0] if isinstance(output[0], dict) else {}
-                    if first.get("success") is False or first.get("error"):
-                        # Error result — show the error
-                        err = str(first.get("error", "failed"))[:160]
-                        clf.write(f"  ◀ ✗ {err}\n")
-                    elif tool_name_end in ("read_files", "read_file"):
-                        # Show per-file line counts using " | " prefix markers.
-                        # Cline may return fewer lines than the file contains;
-                        # the count reflects what was actually returned.
-                        counts = []
-                        for item in output:
-                            if isinstance(item, dict):
-                                path   = str(item.get("query", "?")).rsplit("/", 1)[-1]
-                                result = str(item.get("result", ""))
-                                lc     = result.count(" | ")
-                                counts.append(f"{path}:{lc}")
-                        clf.write(f"  ◀ ✓ {', '.join(counts)}\n")
-                    elif tool_name_end in ("run_commands", "execute_command"):
-                        result_text = str(first.get("result", "")).strip()
-                        err_text    = str(first.get("error", "")).strip()
-                        shown = (err_text or result_text)[:160]
-                        shown = " ".join(shown.split())[:160]
-                        status = "✗" if err_text else "✓"
-                        if shown:
-                            clf.write(f"  ◀ {status} {shown}\n")
-                        else:
-                            clf.write(f"  ◀ {status}\n")
-                    elif tool_name_end == "search_codebase":
-                        result_text = str(first.get("result", ""))
-                        # First line summarises the match count
-                        first_line = result_text.splitlines()[0][:120] if result_text else ""
-                        clf.write(f"  ◀ {first_line}\n")
-                    else:
-                        # Generic: show success/failure and first 120 chars
-                        result_text = str(first.get("result", first.get("text", ""))).strip()
-                        shown = " ".join(result_text.split())[:120]
-                        if shown:
-                            clf.write(f"  ◀ ✓ {shown}\n")
-                        else:
-                            clf.write(f"  ◀ ✓\n")
-                elif isinstance(output, str) and output.strip():
-                    shown = " ".join(output.strip().split())[:160]
-                    clf.write(f"  ◀ {shown}\n")
-                else:
-                    clf.write(f"  ◀ ✓\n")
-                clf.flush()
-
-        elif itype == "iteration_start":
-            token_buf.clear()
-            token_buf.append(f"\x00ITER\x00{ts}\x00{inner.get('iteration', '?')}")
-
-        elif itype in ("content_block_stop", "message_stop", "iteration_end"):
-            flush_tokens()
-
-        elif itype == "message_start":
-            flush_tokens()
-            clf.write(f"\n  ── [{ts}] message ──\n")
+    # text: model prose, narration, reasoning commentary
+    elif etype == "text":
+        flush_tokens()
+        part = event.get("part", {})
+        text = part.get("text", "").strip()
+        if text:
+            clf.write("\n")
+            for line in text.splitlines():
+                clf.write(f"  {line}\n")
             clf.flush()
 
-    elif etype == "hook_event":
-        pass  # agent lifecycle events — not useful in cline.log
-
-    elif etype in ("system", "info"):
+    # tool_use: call + result pair
+    elif etype == "tool_use":
         flush_tokens()
-        text = event.get("message", event.get("text", str(event)))[:200]
-        clf.write(f"[{ts}] {text}\n")
+        part      = event.get("part", {})
+        tool_name = part.get("tool", "?")
+        state     = part.get("state", {})
+        inp       = state.get("input", {})
+        out       = state.get("output", "")
+        timing    = state.get("time", {})
+        title     = state.get("title", "")
+
+        t_start = timing.get("start", 0)
+        t_end   = timing.get("end",   0)
+        dur_ms  = (t_end - t_start) if (t_start and t_end) else 0
+        dur_str = f" {dur_ms}ms" if dur_ms else ""
+
+        if tool_name == "read":
+            hint = f" {inp.get('filePath', '')}"
+        elif tool_name in ("read_files", "readFiles"):
+            paths = inp.get("paths", inp.get("files", []))
+            hint  = f" {', '.join(str(p) for p in paths[:3])}" if isinstance(paths, list) else f" {paths}"
+        elif tool_name in ("edit", "write", "create"):
+            hint = f" {inp.get('filePath', inp.get('path', ''))}"
+        elif tool_name in ("bash", "run_commands", "execute_command"):
+            cmds    = inp.get("commands", [])
+            raw_cmd = str(cmds[0]) if (isinstance(cmds, list) and cmds) else str(inp.get("command", inp.get("cmd", "")))
+            hint    = f" $ {_summarise_command(raw_cmd)}"
+        elif tool_name in ("glob", "grep", "search"):
+            q    = inp.get("pattern", inp.get("query", inp.get("glob", "")))
+            hint = f" {str(q)[:80]!r}"
+        elif tool_name == "list":
+            hint = f" {inp.get('path', '')}"
+        else:
+            hint = ""
+            for key in ("filePath", "path", "command", "url", "query", "description"):
+                if key in inp:
+                    hint = f" {str(inp[key])[:80]}"
+                    break
+
+        clf.write(f"  [{ts}] {tool_name}{hint}{dur_str}\n")
+
+        status_val = state.get("status", "")
+        if status_val == "error" or (isinstance(out, str) and out.lower().startswith("error")):
+            err_text = str(out)[:200] if isinstance(out, str) else str(state.get("error", ""))[:200]
+            clf.write(f"       X {err_text}\n")
+        elif tool_name in ("read", "read_files", "readFiles") and isinstance(out, str):
+            lc = out.count("\n")
+            clf.write(f"       + {title or 'file'} ({lc} lines)\n")
+        elif tool_name in ("bash", "run_commands", "execute_command") and isinstance(out, str):
+            first = next((l.strip() for l in out.splitlines() if l.strip()), "")
+            clf.write(f"       + {first[:160]}\n" if first else "       +\n")
+        elif isinstance(out, str) and out.strip():
+            shown = " ".join(out.strip().split())[:120]
+            clf.write(f"       + {shown}\n")
+        else:
+            clf.write(f"       +\n")
         clf.flush()
 
+    # step_finish: token accounting; emit only on stop or threshold crossing
+    elif etype == "step_finish":
+        flush_tokens()
+        part   = event.get("part", {})
+        reason = part.get("reason", "?")
+        toks   = part.get("tokens", {})
+        cost   = part.get("cost", 0.0)
+
+        inp_step = int(toks.get("input",     0))
+        out_step = int(toks.get("output",    0))
+        rsn_step = int(toks.get("reasoning", 0))
+        cache    = toks.get("cache", {})
+        cr_step  = int(cache.get("read",  0))
+        cw_step  = int(cache.get("write", 0))
+
+        session_tokens["input_total"]     = session_tokens.get("input_total",     0) + inp_step
+        session_tokens["output_total"]    = session_tokens.get("output_total",    0) + out_step
+        session_tokens["reasoning_total"] = session_tokens.get("reasoning_total", 0) + rsn_step
+        session_tokens["cache_read"]      = session_tokens.get("cache_read",      0) + cr_step
+        session_tokens["cache_write"]     = session_tokens.get("cache_write",     0) + cw_step
+        session_tokens["cost_total"]      = session_tokens.get("cost_total",      0.0) + (cost or 0.0)
+        session_tokens["steps"]           = session_tokens.get("steps",           0) + 1
+
+        ctx_used  = session_tokens["input_total"]
+        ctx_total = OPENCODE_CONTEXT_WINDOW
+        pct       = (ctx_used / ctx_total) * 100.0 if ctx_total else 0.0
+        prev_pct  = session_tokens.get("_last_logged_pct", 0.0)
+        _update_context_display(task_id, mode, pct, ctx_used, ctx_total)
+
+        if reason == "stop":
+            rsn_str = f"  rsn={rsn_step:,}" if rsn_step else ""
+            cr_str  = f"  cr={cr_step:,}"   if cr_step  else ""
+            clf.write(
+                f"\n  [{ts}] done"
+                f"  in={session_tokens['input_total']:,}"
+                f"  out={session_tokens['output_total']:,}"
+                f"{rsn_str}{cr_str}"
+                f"  ctx={pct:.1f}%\n"
+            )
+            session_tokens["_last_logged_pct"] = pct
+        elif pct >= 65 and prev_pct < 65:
+            clf.write(f"  [{ts}] CONTEXT {pct:.1f}% ({ctx_used:,}/{ctx_total:,}) -- APPROACHING LIMIT\n")
+            session_tokens["_last_logged_pct"] = pct
+        elif pct >= 50 and prev_pct < 50:
+            clf.write(f"  [{ts}] context {pct:.1f}% ({ctx_used:,}/{ctx_total:,})\n")
+            session_tokens["_last_logged_pct"] = pct
+        # reason="tool-calls" below threshold: no output
+
+        clf.flush()
+
+    # error: always visible; propagated to forge.log
     elif etype == "error":
         flush_tokens()
-        text = event.get("message", event.get("error", str(event)))[:200]
-        clf.write(f"[{ts}] ERROR: {text}\n")
+        err_obj = event.get("error", {})
+        if isinstance(err_obj, dict):
+            name    = err_obj.get("name", "UnknownError")
+            data    = err_obj.get("data", {})
+            message = data.get("message", str(err_obj)) if isinstance(data, dict) else str(data)
+        else:
+            name    = "error"
+            message = str(err_obj)
+        clf.write(f"\n  [{ts}] ERROR {name}: {message[:240]}\n")
         clf.flush()
+        log_err(f"[{task_id}] OpenCode session error -- {name}: {message[:160]}")
 
-    elif etype == "say":
-        # Cline 3.x say events — model prose, tool output, API lifecycle markers
-        say     = event.get("say", "")
-        text    = event.get("text", "").strip()
-        partial = event.get("partial", False)
-
-        if say == "text":
-            if partial:
-                token_buf.append(text)
-            else:
-                if token_buf:
-                    token_buf.append(text)
-                    full = "".join(token_buf).strip()
-                    token_buf.clear()
-                else:
-                    full = text
-                if full:
-                    clf.write(f"  {full}\n")
-                    clf.flush()
-
-        elif say == "command_output":
-            if text:
-                lines = text.replace("\r\n", "\n").splitlines()
-                shown = "\n    ".join(l for l in lines[:5] if l.strip())
-                tail  = f"\n    … +{len(lines) - 5} lines" if len(lines) > 5 else ""
-                clf.write(f"  ◀ {shown}{tail}\n")
-                clf.flush()
-
-        elif say == "completion_result":
-            if text:
-                clf.write(f"\n  ✓ [{ts}] COMPLETE: {text[:120]}\n")
-                clf.flush()
-
-        elif say == "api_req_started":
-            flush_tokens()
-            clf.write(f"\n  ── [{ts}] api request ──\n")
-            clf.flush()
-
-        elif say == "error":
-            flush_tokens()
-            clf.write(f"  ✗ [{ts}] ERROR: {text[:200]}\n")
-            clf.flush()
-
-        elif say == "checkpoint_created":
-            clf.write(f"  · [{ts}] checkpoint\n")
-            clf.flush()
-
-        # say types deliberately skipped (low signal or handled elsewhere):
-        #   reasoning, task, user_feedback, user_feedback_diff,
-        #   api_req_finished, tool_result (come via agent_event in 3.x)
-
-    elif etype == "ask":
-        # Cline 3.x ask events — tool calls and command execution
-        ask  = event.get("ask", "")
-        text = event.get("text", "").strip()
-
-        if ask == "tool":
-            flush_tokens()
-            try:
-                payload = json.loads(text) if text else {}
-                tool    = payload.get("tool", "?")
-                if tool in ("read_file", "write_file", "write_to_file",
-                            "create_file", "list_files", "list_directory",
-                            "delete_file", "apply_diff", "apply_patch"):
-                    hint = f" {payload.get('path', '')}"
-                elif tool == "execute_command":
-                    hint = f" $ {str(payload.get('command', ''))[:100]}"
-                elif tool in ("search_files", "search_replace"):
-                    hint = (f" {payload.get('path', '')}"
-                            f" pattern={payload.get('regex', payload.get('pattern', ''))!r}")
-                elif tool == "attempt_completion":
-                    hint = f" result={str(payload.get('result', ''))[:60]!r}"
-                elif tool == "ask_followup_question":
-                    hint = f" q={str(payload.get('question', ''))[:80]!r}"
-                else:
-                    hint = ""
-                    for key in ("path", "command", "url", "query", "description"):
-                        if key in payload:
-                            hint = f" {key}={str(payload[key])[:80]!r}"
-                            break
-                clf.write(f"\n  ▶ [{ts}] {tool}{hint}\n")
-                clf.flush()
-            except (json.JSONDecodeError, TypeError):
-                clf.write(f"\n  ▶ [{ts}] tool: {text[:120]}\n")
-                clf.flush()
-
-        elif ask == "command":
-            flush_tokens()
-            try:
-                payload = json.loads(text) if text else {}
-                cmd     = payload.get("command", text)[:120]
-            except (json.JSONDecodeError, TypeError):
-                cmd = text[:120]
-            clf.write(f"\n  ▶ [{ts}] execute_command $ {cmd}\n")
-            clf.flush()
-
-        elif ask in ("followup", "request_limit_reached", "resume_task",
-                     "resume_completed_task", "mistake_limit_reached"):
-            flush_tokens()
-            clf.write(f"  ? [{ts}] {ask}: {text[:120]}\n")
-            clf.flush()
-
-        # ask types deliberately skipped: "completion" (final exit ask)
-
+    # unhandled event types
     else:
-        # Unhandled event type — log to cline-skipped.log for inspection.
-        # Remove this block once the event landscape is fully mapped.
         try:
-            with open(CLINE_SKIPPED_LOG_FILE, "a") as skf:
+            with open(OPENCODE_SKIPPED_LOG_FILE, "a") as skf:
                 skf.write(f"[{ts}] type={etype!r} keys={list(event.keys())} "
                           f"raw={json.dumps(event)[:200]}\n")
         except Exception:
             pass
 
 
-def run_cline(
+def run_opencode(
     prompt: str,
     plan_mode: bool,
     cwd: Path,
@@ -2107,47 +1990,48 @@ def run_cline(
     model_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
-    Run Cline CLI with retry logic for llama.cpp failures.
+    Run OpenCode CLI with retry logic for llama.cpp failures.
     Returns (success: bool, output_text: str).
 
-    model_id is passed via -M to select the llama-swap variant:
-      Qwen3.6-35B-A3B:planning — used for STEP 1 (plan mode, all tasks)
-      Qwen3.6-35B-A3B:coding   — used for STEP 2-4 (act mode, all tasks)
-    llama-swap applies the correct sampling params server-side via setParamsByID.
+    model_id is passed via --model to select the llama-swap variant:
+      openai-compatible/Qwen3.6-35B-A3B:planning — PLAN sessions (forge-plan agent)
+      openai-compatible/Qwen3.6-35B-A3B:coding   — ACT sessions  (forge-act agent)
 
-    Cline output is parsed and written to CLINE_LOG_FILE in human-readable form.
-    Monitor live with: tail -f forge/cline.log
+    OpenCode output is parsed and written to OPENCODE_LOG_FILE in human-readable form.
+    Monitor live with: tail -f forge/opencode.log
+    Context usage:    tail -f forge/context.log
     """
-    cmd        = build_cline_cmd(prompt, plan_mode, cwd, model_id=model_id)
+    cmd        = build_opencode_cmd(prompt, plan_mode, cwd, model_id=model_id)
     mode_label = "PLAN" if plan_mode else "ACT"
     model_label = model_id or "default"
-    log(f"[{task_id}] Running Cline {mode_label} mode — model: {model_label} "
-        f"(timeout {CLINE_TIMEOUT}s, attempt {attempt_number})")
-    log(f"[{task_id}] Cline output → {CLINE_LOG_FILE}")
+    log(f"[{task_id}] Running OpenCode {mode_label} mode — model: {model_label} "
+        f"(timeout {OPENCODE_TIMEOUT}s, attempt {attempt_number})")
+    log(f"[{task_id}] OpenCode output → {OPENCODE_LOG_FILE}")
 
     full_output = ""
 
-    for attempt in range(1, CLINE_RETRIES + 1):
+    for attempt in range(1, OPENCODE_RETRIES + 1):
         if attempt > 1:
-            delay = CLINE_RETRY_DELAY * attempt
-            msg = (f"⚠️ `{task_id}` Cline {mode_label} attempt {attempt}/{CLINE_RETRIES} "
+            delay = OPENCODE_RETRY_DELAY * attempt
+            msg = (f"⚠️ `{task_id}` OpenCode {mode_label} attempt {attempt}/{OPENCODE_RETRIES} "
                    f"— waiting {delay}s (llama.cpp may have crashed)")
             log_warn(msg)
             if dc and approvals_channel_id:
                 dc.send_message(approvals_channel_id, msg)
             time.sleep(delay)
 
-        text_output: list[str] = []
-        token_buf:   list[str] = []
+        text_output:    list[str] = []
+        token_buf:      list[str] = []
+        session_tokens: dict      = {}
         exit_code = -1
 
-        with open(CLINE_LOG_FILE, "a") as clf:
+        with open(OPENCODE_LOG_FILE, "a") as clf:
             clf.write(
                 f"\n{'─'*60}\n"
-                f"[{_ts()}] [{task_id}] Cline {mode_label} — attempt {attempt}/{CLINE_RETRIES}\n"
+                f"[{_ts()}] [{task_id}] OpenCode {mode_label} — attempt {attempt}/{OPENCODE_RETRIES}\n"
                 f"{'─'*60}\n"
             )
-        _update_context_display(task_id, mode_label, 0.0, 0, 262144)
+        _update_context_display(task_id, mode_label, 0.0, 0, OPENCODE_CONTEXT_WINDOW)
 
         try:
             proc = subprocess.Popen(
@@ -2158,31 +2042,21 @@ def run_cline(
                 bufsize=1,
             )
 
-            with open(CLINE_LOG_FILE, "a") as clf:
+            with open(OPENCODE_LOG_FILE, "a") as clf:
                 for line in proc.stdout:
                     raw = line.rstrip()
                     try:
                         event = json.loads(raw)
-                        _write_cline_log(clf, event, token_buf,
-                                         task_id=task_id, mode=mode_label)
+                        _write_opencode_log(clf, event, token_buf,
+                                            task_id=task_id, mode=mode_label,
+                                            session_tokens=session_tokens)
                         etype = event.get("type", "")
-                        if etype == "agent_event":
-                            inner = event.get("event", {})
-                            itype = inner.get("type", "")
-                            if itype == "content_end":
-                                text = inner.get("text", "")
-                                if text:
-                                    text_output.append(text)
-                        elif etype == "text":
-                            text_output.append(event.get("text", ""))
-                        elif etype in ("message", "completion"):
-                            content = event.get("content", event.get("text", ""))
-                            if isinstance(content, str) and content:
-                                text_output.append(content)
-                            elif isinstance(content, list):
-                                for block in content:
-                                    if isinstance(block, dict) and block.get("type") == "text":
-                                        text_output.append(block.get("text", ""))
+                        # Collect text output for plan extraction
+                        if etype == "text":
+                            part = event.get("part", {})
+                            t = part.get("text", "")
+                            if t:
+                                text_output.append(t)
                     except json.JSONDecodeError:
                         if raw:
                             clf.write(f"{raw}\n")
@@ -2194,28 +2068,44 @@ def run_cline(
                     clf.flush()
                     token_buf.clear()
 
-            proc.wait(timeout=30)
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             exit_code = proc.returncode
 
         except subprocess.TimeoutExpired:
             proc.kill()
-            log_err(f"[{task_id}] Cline {mode_label} timed out after {CLINE_TIMEOUT}s")
+            log_err(f"[{task_id}] OpenCode {mode_label} timed out after {OPENCODE_TIMEOUT}s")
             exit_code = -1
         except FileNotFoundError:
-            log_err(f"Cline binary not found: {CLINE_BIN}")
-            log_err("Install with: npm install -g cline")
+            log_err(f"OpenCode binary not found: {OPENCODE_BIN}")
+            log_err("Install with: npm install -g opencode-ai")
             sys.exit(1)
 
-        with open(CLINE_LOG_FILE, "a") as clf:
-            clf.write(f"[{_ts()}] [{task_id}] Cline {mode_label} exited: {exit_code}\n")
+        # Write session token summary to opencode.log
+        with open(OPENCODE_LOG_FILE, "a") as clf:
+            clf.write(f"[{_ts()}] [{task_id}] OpenCode {mode_label} exited: {exit_code}\n")
+            if session_tokens:
+                clf.write(
+                    f"[{_ts()}] [{task_id}] Session tokens — "
+                    f"in={session_tokens.get('input_total', 0):,}  "
+                    f"out={session_tokens.get('output_total', 0):,}  "
+                    f"rsn={session_tokens.get('reasoning_total', 0):,}  "
+                    f"cache_r={session_tokens.get('cache_read', 0):,}  "
+                    f"cache_w={session_tokens.get('cache_write', 0):,}  "
+                    f"cost=${session_tokens.get('cost_total', 0.0):.4f}  "
+                    f"steps={session_tokens.get('steps', 0)}\n"
+                )
 
         full_output = "\n".join(text_output)
 
         if exit_code == 0:
-            log(f"[{task_id}] Cline {mode_label} completed successfully")
+            log(f"[{task_id}] OpenCode {mode_label} completed successfully")
             return True, full_output
 
-        log_err(f"[{task_id}] Cline {mode_label} exited with code {exit_code}")
+        log_err(f"[{task_id}] OpenCode {mode_label} exited with code {exit_code}")
 
     return False, full_output
 
@@ -2223,9 +2113,9 @@ def run_cline(
 
 def build_task_prompt(task: dict, feedback: str = "") -> str:
     """
-    Build the prompt injected into Cline for the PLAN session.
+    Build the prompt injected into OpenCode for the PLAN session.
 
-    Paths must match .clinerules sections 11.1 and 11.2 exactly.
+    Paths must match docs/FORGE_AGENT_RULES.md §10 exactly.
     The feedback parameter carries rejection notes from a prior plan attempt.
     """
     tid     = task["id"]
@@ -2256,7 +2146,7 @@ def build_task_prompt(task: dict, feedback: str = "") -> str:
         f"2. Read docs/ENVIRONMENT.md, docs/ARCHITECTURE.md, and\n"
         f"   docs/TASKS_PHASE{phase_padded}.md.\n"
         f"3. Write the plan report to .forge/reports/{tid}_plan.md.\n"
-        f"   Use the exact section structure from .clinerules section 3.\n"
+        f"   Use the exact section structure from docs/FORGE_AGENT_RULES.md (plan report format).\n"
         f"   Do not write anything to this file until the complete plan is\n"
         f"   ready. The first and only write must start with the exact line\n"
         f"   '# Plan Report: {tid}'. Writing narration, thinking, or reading\n"
@@ -2275,10 +2165,10 @@ def build_task_prompt(task: dict, feedback: str = "") -> str:
 
 def build_act_prompt(task: dict, approved_plan: str) -> str:
     """
-    Build the prompt injected into Cline for the ACT (implementation) session.
+    Build the prompt injected into OpenCode for the ACT (implementation) session.
 
-    The approved plan is injected verbatim — Cline must implement strictly to it.
-    Paths must match .clinerules sections 11.1 and 11.2.
+    The approved plan is injected verbatim — OpenCode must implement strictly to it.
+    Paths must match docs/FORGE_AGENT_RULES.md §10.
     """
     tid     = task["id"]
     desc    = task["description"]
@@ -2317,7 +2207,7 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"   This asserts the committed ./anvilml.toml key-set matches ServerConfig::default()\n"
         f"   recursively. If this task added/renamed/removed any ServerConfig field (or a\n"
         f"   field on a nested config struct), you MUST have already updated ./anvilml.toml\n"
-        f"   and docs/ENVIRONMENT.md §2 in this same task — see .clinerules 7.8. Zero\n"
+        f"   and docs/ENVIRONMENT.md §2 in this same task — see docs/FORGE_AGENT_RULES.md §5.8. Zero\n"
         f"   failures required before proceeding. Do NOT weaken or skip this test to pass;\n"
         f"   fix anvilml.toml instead. (Skip only if the config_reference test does not yet\n"
         f"   exist, i.e. before task P3-B2 has been implemented.)\n"
@@ -2325,7 +2215,7 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"   Do NOT run git commit or git push — The Forge commits and pushes.\n"
         f"   Do NOT make any git operations outside the {project} repo.\n"
         f"8. REPORT: Write .forge/reports/{tid}_implement.md using the exact\n"
-        f"   section structure from .clinerules section 4. Include verbatim\n"
+        f"   section structure from docs/FORGE_AGENT_RULES.md (implementation report format). Include verbatim\n"
         f"   test output (Linux, the windows-gnu cross-check, and the config drift gate).\n"
         f"   Write this ONLY after all tests pass and files are staged.\n"
         f"9. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
@@ -2366,7 +2256,7 @@ def execute_task(
       approvals_channel_id (#forge-approvals) — approval requests, polled for reactions.
 
     Each task targets exactly one project (task["project"]).  The Forge resolves
-    the project path from repos.json, verifies the branch, runs Cline in that
+    the project path from repos.json, verifies the branch, runs OpenCode in that
     repo's working directory, and writes reports into that repo's .forge/reports/.
 
     Returns True if task completed successfully.
@@ -2424,9 +2314,9 @@ def execute_task(
     # ── Phase 1: Plan ────────────────────────────────────────────────────────
     plan_attempt = 1
     feedback     = ""
-    t_plan_start = 0.0  # set when Cline PLAN runs; 0 if plan was already approved on resume
+    t_plan_start = 0.0  # set when OpenCode PLAN runs; 0 if plan was already approved on resume
     t_plan_end   = 0.0
-    t_act_start  = 0.0  # set when Cline ACT runs
+    t_act_start  = 0.0  # set when OpenCode ACT runs
     t_act_end    = 0.0
 
     while True:
@@ -2438,16 +2328,16 @@ def execute_task(
 
         prompt = build_task_prompt(task, feedback=feedback)
 
-        # Write CURRENT_TASK.md so Cline's §1 identity check passes
+        # Write CURRENT_TASK.md so OpenCode's §1 identity check passes
         if not dry_run:
             write_current_task_file(task, step="PLAN", status="IN_PROGRESS")
 
         t_plan_start = time.monotonic()
         if dry_run:
-            log(f"[{tid}] [DRY RUN] Would run Cline PLAN mode ({MODEL_PLANNING})")
+            log(f"[{tid}] [DRY RUN] Would run OpenCode PLAN mode ({MODEL_PLANNING})")
             plan_text = f"[DRY RUN] Plan for {tid}"
         else:
-            success, output = run_cline(
+            success, output = run_opencode(
                 prompt, plan_mode=True, cwd=repo_path,
                 task_id=tid, dc=dc,
                 approvals_channel_id=approvals_channel_id,
@@ -2455,7 +2345,7 @@ def execute_task(
                 model_id=MODEL_PLANNING,
             )
             if not success:
-                msg = f"❌ `{tid}` Cline PLAN failed after {CLINE_RETRIES} attempts. Stopping."
+                msg = f"❌ `{tid}` OpenCode PLAN failed after {OPENCODE_RETRIES} attempts. Stopping."
                 log_err(msg)
                 if dc and approvals_channel_id:
                     dc.send_message(approvals_channel_id, msg)
@@ -2479,8 +2369,8 @@ def execute_task(
                         f"| Task ID | {tid} |\n"
                         f"| Description | {task['description']} |\n\n"
                         f"## Plan\n\n"
-                        f"*Cline did not produce a readable plan. "
-                        f"Review forge/cline.log for session output.*\n"
+                        f"*OpenCode did not produce a readable plan. "
+                        f"Review forge/opencode.log for session output.*\n"
                     )
 
             write_forge_plan_report(task, plan_text, plan_attempt)
@@ -2606,17 +2496,17 @@ def execute_task(
     # ── Phase 2: Act ─────────────────────────────────────────────────────────
     log(f"[{tid}] ⚙️  Act phase — model: {MODEL_CODING}")
 
-    # Write CURRENT_TASK.md so Cline's §1 identity check passes
+    # Write CURRENT_TASK.md so OpenCode's §1 identity check passes
     if not dry_run:
         write_current_task_file(task, step="IMPLEMENT", status="IN_PROGRESS")
 
     t_act_start = time.monotonic()
     if dry_run:
-        log(f"[{tid}] [DRY RUN] Would run Cline ACT mode ({MODEL_CODING})")
+        log(f"[{tid}] [DRY RUN] Would run OpenCode ACT mode ({MODEL_CODING})")
         act_success = True
     else:
         act_prompt  = build_act_prompt(task, state["current_plan"])
-        act_success, _ = run_cline(
+        act_success, _ = run_opencode(
             act_prompt, plan_mode=False, cwd=repo_path,
             task_id=tid, dc=dc,
             approvals_channel_id=approvals_channel_id,
@@ -2625,7 +2515,7 @@ def execute_task(
     t_act_end = time.monotonic()  # push approval wait NOT included
 
     if not act_success:
-        msg = f"❌ `{tid}` Cline ACT failed after {CLINE_RETRIES} attempts. Task marked failed."
+        msg = f"❌ `{tid}` OpenCode ACT failed after {OPENCODE_RETRIES} attempts. Task marked failed."
         log_err(msg)
         if dc and approvals_channel_id:
             dc.send_message(approvals_channel_id, msg)
@@ -2641,8 +2531,8 @@ def execute_task(
         log(f"[{tid}] Committing {project} repo...")
         commit_hash = _forge_commit(task)
         if not commit_hash:
-            log_warn(f"[{tid}] Nothing committed in {project} — may be expected if Cline "
-                     f"found no changes, or check .forge/cline.log for issues.")
+            log_warn(f"[{tid}] Nothing committed in {project} — may be expected if OpenCode "
+                     f"found no changes, or check forge/opencode.log for issues.")
 
     # ── Validate commit message format ────────────────────────────────────────
     if not dry_run:
@@ -2667,8 +2557,8 @@ def execute_task(
                  f"{implement_report_path(task).relative_to(repo_path)}")
         impl_report_text = (
             f"# Implementation Report: {tid}\n\n"
-            f"*Cline did not write the implementation report. "
-            f"Review forge/cline.log for session output.*\n"
+            f"*OpenCode did not write the implementation report. "
+            f"Review forge/opencode.log for session output.*\n"
         )
 
     plan_report_text = read_plan_report(task)
@@ -2772,7 +2662,7 @@ def execute_task(
     state["impl_report_message_id"] = None
     save_state(state)
 
-    for log_file in (CLINE_LOG_FILE, CONTEXT_LOG_FILE):
+    for log_file in (OPENCODE_LOG_FILE, CONTEXT_LOG_FILE):
         try:
             log_file.write_text("")
         except Exception as e:
@@ -2811,7 +2701,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Show what would run without executing Cline or waiting for approvals.",
+        help="Show what would run without executing OpenCode or waiting for approvals.",
     )
     parser.add_argument(
         "--list", action="store_true",
@@ -2841,6 +2731,9 @@ def main() -> None:
         log_warn("FORGE_DISCORD_TOKEN not set — running without Discord notifications")
     if not DISCORD_GUILD_ID:
         log_warn("FORGE_DISCORD_GUILD_ID not set — Discord channel lookup disabled")
+
+    # ── Sync OpenCode agent files to global agents directory ─────────────────
+    ensure_opencode_agents()
 
     # ── Validate --repo against loaded registry ───────────────────────────────
     if args.repo not in REPOS:
