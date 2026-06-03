@@ -1421,13 +1421,26 @@ def _bullet_lines(text: str, max_lines: int = 6) -> str:
     lines = [l.strip("- •\t ") for l in text.splitlines() if l.strip("- •\t ")]
     return "\n".join(f"• {l}" for l in lines[:max_lines])
 
+def _discord_escape(s: str) -> str:
+    """
+    Escape Discord markdown special characters in user-supplied text
+    (task descriptions, names, etc.) to prevent unintended formatting.
+    Escapes: * _ ~ | ` \\ > [ ]
+    Does NOT escape backtick-wrapped content — those are already code spans.
+    """
+    # Order matters: backslash first to avoid double-escaping
+    for ch in ("\\", "*", "_", "~", "|", "`", ">", "[", "]"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def format_report_caption(task: dict, section: str, dur: str = "") -> str:
     """
     Caption posted above the attached .md file in #forge-reports.
     The full report is in the attachment — no extraction needed.
     """
     tid     = task["id"]
-    desc    = task["description"]
+    desc    = _discord_escape(task["description"])
     phase   = task.get("phase", "?")
     project = task.get("project", "(unknown)")
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
@@ -1453,7 +1466,7 @@ def format_plan_approval_request(task: dict, attempt: int,
     Full plan is in the attached file in #forge-reports — nothing is extracted here.
     """
     tid     = task["id"]
-    desc    = task["description"]
+    desc    = _discord_escape(task["description"])
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
     project = task.get("project", "(unknown)")
 
@@ -1489,7 +1502,7 @@ def format_push_approval_request(task: dict, commit_info: dict,
     Includes task ID for cross-referencing with #forge-reports.
     """
     tid     = task["id"]
-    desc    = task["description"]
+    desc    = _discord_escape(task["description"])
     project = task.get("project", "(unknown)")
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
 
@@ -1526,7 +1539,7 @@ def format_implementation_caption(task: dict, commit_info: dict,
     Shows commit hashes only — the full report is in the attachment.
     """
     tid     = task["id"]
-    desc    = task["description"]
+    desc    = _discord_escape(task["description"])
     phase   = task.get("phase", "?")
     project = task.get("project", "(unknown)")
     prereqs = ", ".join(task.get("prereqs", [])) or "none"
@@ -2435,7 +2448,7 @@ def execute_task(
         prereqs = ", ".join(task.get("prereqs", [])) or "none"
         dc.send_message(
             reports_channel_id,
-            f"⚙️ **Task `{tid}` STARTED** — {task['description']}\n"
+            f"⚙️ **Task `{tid}` STARTED** — {_discord_escape(task['description'])}\n"
             f"Phase {task.get('phase', '?')} · Project: `{project}` · Prereqs: `{prereqs}`"
         )
 
@@ -2812,11 +2825,11 @@ def execute_task(
             log_warn(f"[{tid}] Could not purge {log_file.name}: {e}")
 
     if dc and reports_channel_id:
-        plan_dur = _fmt_duration(t_plan_end - t_plan_start)
-        act_dur  = _fmt_duration(t_act_end  - t_act_start)
+        plan_dur = _fmt_duration(t_plan_end - t_plan_start) if t_plan_end > 0 else "—"
+        act_dur  = _fmt_duration(t_act_end  - t_act_start)  if t_act_end  > 0 else "—"
         dc.send_message(
             reports_channel_id,
-            f"✅ **Task `{tid}` COMPLETE** — {task['description']}\n"
+            f"✅ **Task `{tid}` COMPLETE** — {_discord_escape(task['description'])}\n"
             f"⏱ Planning: `{plan_dur}` · Implementation: `{act_dur}` _(approval wait excluded)_"
         )
 
