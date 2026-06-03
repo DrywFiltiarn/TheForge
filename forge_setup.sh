@@ -107,9 +107,14 @@ else
 export FORGE_DISCORD_TOKEN=""
 export FORGE_DISCORD_GUILD_ID=""
 
-# Discord channel names (must exist in your server)
+# Discord channel names AND channel id's (must exist in your server)
 export FORGE_DISCORD_APPROVALS_CHANNEL="forge-approvals"
 export FORGE_DISCORD_REPORTS_CHANNEL="forge-reports"
+export FORGE_DISCORD_REPORTS_CHANNEL_ID=""
+export FORGE_DISCORD_APPROVALS_CHANNEL_ID=""
+
+# Discord OWNER (you!) user ID
+export FORGE_DISCORD_OWNER_ID=""
 
 # ── OpenCode ──────────────────────────────────────────────────────────────────
 # export FORGE_OPENCODE_BIN="opencode"           # path to opencode binary (default: opencode)
