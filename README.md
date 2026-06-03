@@ -1,7 +1,6 @@
-# Forge — SindriStudio Autonomous Development Orchestrator
+# The Forge — Autonomous Development Orchestrator
 
-The Forge drives OpenCode through the SindriStudio build plan one atomic task at a time,
-with Discord approval gates and full resume capability after interruptions or llama.cpp failures.
+The Forge orchestrator drives OpenCode through a plan → approve → implement → approve → commit/push cycle, one atomic task at a time, with Discord approval gates and full resume capability after interruptions or llama.cpp failures.
 
 ---
 
@@ -9,19 +8,19 @@ with Discord approval gates and full resume capability after interruptions or ll
 
 Two channels, clearly separated:
 
-| Channel | Role | Who reads | Forge behaviour |
+| Channel | Role | Who reads | The Forge behaviour |
 |---|---|---|---|
 | **#forge-reports** | Public broadcast | Anyone | Posts plan reports and implementation reports. **Never polled. Never acts on reactions here.** |
 | **#forge-approvals** | Server-owner only | You | All approval requests. **Only channel the Forge polls for reactions.** |
 
 ### Workflow per task
 
-1. OpenCode generates a plan → Forge posts **plan report** to `#forge-reports`
-2. Forge posts **plan approval request** (with task ID) to `#forge-approvals`
+1. OpenCode generates a plan → The Forge posts **plan report** to `#forge-reports`
+2. The Forge posts **plan approval request** (with task ID) to `#forge-approvals`
 3. You read the plan in `#forge-reports`, then approve/reject in `#forge-approvals`
-4. On approve → OpenCode implements, tests, stages; Forge commits and pushes
-5. Forge posts **implementation report** to `#forge-reports`
-6. Forge posts **push approval request** (with task ID) to `#forge-approvals`
+4. On approve → OpenCode implements, tests, stages; The Forge commits and pushes
+5. The Forge posts **implementation report** to `#forge-reports`
+6. The Forge posts **push approval request** (with task ID) to `#forge-approvals`
 7. You read the implementation report, then approve/reject in `#forge-approvals`
 
 Each approval message in `#forge-approvals` contains the task ID and a note like
@@ -234,7 +233,7 @@ tail -f forge/logs/forge.log       # orchestrator decisions, approvals, errors
 ### llama.cpp crash or timeout
 Automatically retried up to `FORGE_OPENCODE_RETRIES` times (default: 3) with
 increasing delays. A warning is posted to `#forge-approvals` on each retry.
-If all retries fail, the task is marked `failed` and the Forge stops.
+If all retries fail, the task is marked `failed` and The Forge stops.
 
 ### Retry a failed task with clean repos
 ```bash
