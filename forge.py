@@ -1719,7 +1719,7 @@ def _update_context_display(task_id: str, mode: str, pct: float,
         f"{color}{'─' * 54}{reset}\n"
         f"  Task    : {task_id}  [{mode}]\n"
         f"  Updated : {_ts()}\n"
-        f"{'─' * 54}\n"
+        f"{color}{'─' * 54}{reset}\n"
         f"\n"
         f"  {color}Context Usage:  {pct:.1f}%  {status}{reset}\n"
         f"\n"
@@ -1727,7 +1727,7 @@ def _update_context_display(task_id: str, mode: str, pct: float,
         f"  {tokens_used:,} / {tokens_total:,} tokens\n"
         f"\n"
         f"  Threshold : {color}65% = {int(tokens_total * 0.65):,} tokens{reset}\n"
-        f"{'─' * 54}\n"
+        f"{color}{'─' * 54}{reset}\n"
     )
     try:
         CONTEXT_LOG_FILE.write_text(content)
