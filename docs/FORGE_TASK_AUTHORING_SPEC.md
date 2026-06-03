@@ -1,7 +1,7 @@
-# Forge Task Authoring Specification
+# The Forge — Task Authoring Specification
 
 **Document:** `FORGE_TASK_AUTHORING_SPEC.md`  
-**Applies to:** `tasks.json`, `docs/TASKS_PHASE<NNN>.md`  
+**Applies to:** `.forge/tasks/tasks_phase<NNN>.json`, `docs/TASKS_PHASE<NNN>.md`  
 **Audience:** Human authors and LLMs generating task content for The Forge orchestrator
 
 ---
@@ -10,10 +10,10 @@
 
 1. [Purpose and Scope](#1-purpose-and-scope)
 2. [Concepts and Definitions](#2-concepts-and-definitions)
-3. [tasks.json — Format Specification](#3-tasksjson--format-specification)
-4. [tasks.json — Field Reference](#4-tasksjson--field-reference)
-5. [tasks.json — Validation Rules](#5-tasksjson--validation-rules)
-6. [tasks.json — ID and Phase Numbering](#6-tasksjson--id-and-phase-numbering)
+3. [Task JSON — Format Specification](#3-task-json--format-specification)
+4. [Task JSON — Field Reference](#4-task-json--field-reference)
+5. [Task JSON — Validation Rules](#5-task-json--validation-rules)
+6. [Task JSON — ID and Phase Numbering](#6-task-json--id-and-phase-numbering)
 7. [TASKS_PHASE Document — Purpose and Location](#7-tasks_phase-document--purpose-and-location)
 8. [TASKS_PHASE Document — Format Specification](#8-tasks_phase-document--format-specification)
 9. [TASKS_PHASE Document — Section Reference](#9-tasks_phase-document--section-reference)
@@ -28,12 +28,12 @@
 
 ## 1. Purpose and Scope
 
-The Forge orchestrator drives Cline CLI through a plan → approve → implement → approve → commit/push cycle, one atomic task at a time. It reads task definitions from two sources:
+The Forge orchestrator drives OpenCode through a plan → approve → implement → approve → commit/push cycle, one atomic task at a time. It reads task definitions from two sources:
 
-- **`tasks.json`** — the machine-readable task DAG consumed directly by `forge.py`. This is the authoritative source for task execution.
-- **`docs/TASKS_PHASE<NNN>.md`** — a human-readable narrative document for each phase, read by Cline at the start of every session to understand the broader context of the task it is executing.
+- **`tasks_phase<NNN>.json`** — per-phase machine-readable task arrays, stored inside each project repo at `.forge/tasks/`. These are the authoritative sources for task execution.
+- **`docs/TASKS_PHASE<NNN>.md`** — a human-readable narrative document for each phase, read by OpenCode at the start of every session to understand the broader context of the task it is executing.
 
-These two sources must stay in sync. Every task that appears in `tasks.json` for a given phase must have a corresponding entry in the matching `TASKS_PHASE<NNN>.md`. They are authored together and treated as a pair.
+These two sources must stay in sync. Every task that appears in `tasks_phase<NNN>.json` for a given phase must have a corresponding entry in the matching `TASKS_PHASE<NNN>.md`. They are authored together and treated as a pair.
 
 This document specifies the exact format, field semantics, validation rules, and quality standards for both. It is written so that an LLM can use it as a complete prompt context to generate correct task sets without further clarification.
 
@@ -41,29 +41,34 @@ This document specifies the exact format, field semantics, validation rules, and
 
 ## 2. Concepts and Definitions
 
-**Task** — the smallest unit of work The Forge can execute. One Cline PLAN session followed by one Cline ACT session. Must be completable within a single 90-minute Cline session.
+**Task** — the smallest unit of work The Forge can execute. One OpenCode PLAN session followed by one OpenCode ACT session. Must be completable within a single 120-minute OpenCode session.
 
-**Phase** — a named group of tasks that together achieve a major milestone (e.g. "AnvilML Core Types"). Phases are numbered 001–999. Phase numbers are sequential but not necessarily contiguous. A phase has one `tasks.json` (which may contain tasks from multiple phases) and one `TASKS_PHASE<NNN>.md` per phase.
+**Phase** — a named group of tasks that together achieve a major milestone (e.g. "AnvilML Core Types"). Phases are numbered 001–999. Phase numbers are sequential but not necessarily contiguous. A phase has one `tasks_phase<NNN>.json` per project and one `TASKS_PHASE<NNN>.md` per project.
 
 **Project** — one of the registered repositories (`sindristudio`, `anvilml`, `bloomeryui`). Each task targets exactly one project. Cross-project work must be split into separate tasks, one per project.
 
-**DAG** — the task dependency graph. `prereqs` references create directed edges. The Forge resolves execution order by topological sort. Cycles are a fatal error.
+**DAG** — the task dependency graph. `prereqs` references create directed edges. The Forge resolves execution order by topological sort within and across phase files. Cycles are a fatal error.
 
-**Atomic task** — a task whose implementation fits within one Cline ACT session (≤90 min), produces a self-contained, testable increment, and does not leave the codebase in a broken state if the next task is delayed.
+**Atomic task** — a task whose implementation fits within one OpenCode ACT session (≤120 min), produces a self-contained, testable increment, and does not leave the codebase in a broken state if the next task is delayed.
 
 ---
 
-## 3. tasks.json — Format Specification
+## 3. Task JSON — Format Specification
 
-`tasks.json` is a JSON array of task objects. It lives next to `forge.py` in The Forge directory (not inside any repository).
+Task definitions live inside each project repository under `.forge/tasks/`. Each phase has its own file. The Forge loads all phase files for the active project at startup and merges them into a single DAG.
 
 ```
-forge/
-  forge.py
-  tasks.json          ← this file
-  repos.json
-  state.json
+<project_repo>/
+  .forge/
+    tasks/
+      tasks_phase001.json   ← phase 1 tasks for this project
+      tasks_phase002.json   ← phase 2 tasks for this project
+      ...
+    reports/                ← written by OpenCode during sessions
+    state/                  ← CURRENT_TASK.md, state.json
 ```
+
+Each file is a JSON array of task objects. Files are loaded in phase-number order. Duplicate task IDs across files are a fatal error.
 
 ### Top-level structure
 
@@ -90,11 +95,11 @@ The array is ordered. The Forge respects the order when multiple tasks are simul
 }
 ```
 
-All six fields are required. No additional fields are permitted. The Forge will reject tasks with unknown fields (to catch the deprecated `repos` field and similar mistakes).
+All six fields are required. No additional fields are permitted. The Forge rejects tasks with unknown fields (to catch the deprecated `repos` field and similar mistakes).
 
 ---
 
-## 4. tasks.json — Field Reference
+## 4. Task JSON — Field Reference
 
 ### `id` — string, required
 
@@ -109,7 +114,7 @@ Unique identifier for the task. Used as the filename base for reports (`<id>_pla
 **Examples:** `P1-A1`, `P1-A2`, `P1-B1`, `P12-C3`
 
 **Rules:**
-- Must be globally unique across the entire `tasks.json` array
+- Must be globally unique across all `tasks_phase<NNN>.json` files for the project
 - Must not contain spaces or special characters other than `-`
 - The phase in the ID must match the `phase` field value (short form)
 
@@ -159,7 +164,7 @@ The logical name of the single repository this task operates on. Must exactly ma
 
 **Rules:**
 - Exactly one project per task. If a task naturally spans two projects, split it.
-- The project name determines where Cline runs (`cwd`), where reports are written (`.forge/reports/` inside that repo), and which repo The Forge commits and pushes.
+- The project name determines where OpenCode runs (`cwd`), where reports are written (`.forge/reports/` inside that repo), and which repo The Forge commits and pushes.
 - `"root"` is no longer a valid value (deprecated). Tasks that would have targeted `root` should target `sindristudio`.
 
 ---
@@ -169,7 +174,7 @@ The logical name of the single repository this task operates on. Must exactly ma
 Task IDs that must be in the `completed` state before this task becomes eligible for execution. An empty array `[]` means the task is immediately unblocked.
 
 **Rules:**
-- Every ID listed must exist in the same `tasks.json`
+- Every ID listed must exist in the project's task files (any phase file)
 - Must not form a cycle (directly or transitively)
 - List only the direct predecessors — do not list transitive dependencies. If A→B→C, task C lists only `["B"]`, not `["A", "B"]`
 - Order within the array does not matter
@@ -182,7 +187,7 @@ Task IDs that must be in the `completed` state before this task becomes eligible
 
 ### `context` — string, required
 
-The primary implementation instruction for the task. Cline reads this field at the start of the PLAN session and uses it as the authoritative specification for what to build. The `context` field is the difference between a task that produces correct output and one that produces plausible-but-wrong output.
+The primary implementation instruction for the task. OpenCode reads this field at the start of the PLAN session and uses it as the authoritative specification for what to build. The `context` field is the difference between a task that produces correct output and one that produces plausible-but-wrong output.
 
 See [Section 11](#11-context-field-writing-guide) for full writing guidance. Key rules:
 
@@ -200,7 +205,7 @@ Optional hints to The Forge and the model about the nature of the task. Use an e
 
 ---
 
-## 5. tasks.json — Validation Rules
+## 5. Task JSON — Validation Rules
 
 The Forge runs these checks at startup and aborts if any fail. An LLM generating tasks must satisfy all of them.
 
@@ -218,7 +223,7 @@ The Forge runs these checks at startup and aborts if any fail. An LLM generating
 
 ---
 
-## 6. tasks.json — ID and Phase Numbering
+## 6. Task JSON — ID and Phase Numbering
 
 ### Phase number assignment
 
@@ -260,13 +265,13 @@ Start at 1. Increment by 1. Gaps are allowed if tasks are removed but not recomm
 
 ### Purpose
 
-The `TASKS_PHASE<NNN>.md` document is read by Cline at the start of every PLAN and ACT session for tasks belonging to that phase. It provides the narrative context that `tasks.json` deliberately omits: the architectural rationale, cross-task dependencies explained in prose, interfaces that tasks must conform to, and the overall shape of the phase.
+The `TASKS_PHASE<NNN>.md` document is read by OpenCode at the start of every PLAN and ACT session for tasks belonging to that phase. It provides the narrative context that `tasks_phase<NNN>.json` deliberately omits: the architectural rationale, cross-task dependencies explained in prose, interfaces that tasks must conform to, and the overall shape of the phase.
 
-It is NOT a duplicate of `tasks.json`. It does not list every field of every task. It provides the context a developer would need to understand why the tasks are structured the way they are, in the order they are.
+It is NOT a duplicate of `tasks_phase<NNN>.json`. It does not list every field of every task. It provides the context a developer would need to understand why the tasks are structured the way they are, in the order they are.
 
 ### Location
 
-The file lives inside the target repository's `docs/` directory, at the path Cline will read:
+The file lives inside the target repository's `docs/` directory, at the path OpenCode will read:
 
 ```
 <project_repo>/
@@ -346,8 +351,8 @@ state the document and the specific sections or types that apply.>
 
 <One subsection per group. For each task: the full task ID, a plain-English
 description of what to implement and why, the files to create or modify, and
-the acceptance criterion. This is the narrative that Cline reads alongside
-the context field in tasks.json.>
+the acceptance criterion. This is the narrative that OpenCode reads alongside
+the context field in tasks_phase<NNN>.json.>
 
 ### Group A — <Subsystem Name>
 
@@ -439,7 +444,7 @@ A table. The `Contract document` column names the file (relative to `docs/`). Th
 
 ### Task Descriptions — mandatory
 
-One H3 subsection per group letter. Within each group, one H4 subsection per task. Every task in `tasks.json` for this phase must appear here; every task described here must appear in `tasks.json`.
+One H3 subsection per group letter. Within each group, one H4 subsection per task. Every task in `tasks_phase<NNN>.json` for this phase must appear here; every task described here must appear in `tasks_phase<NNN>.json`.
 
 The **Acceptance criterion** line must be a runnable shell command or sequence. Vague criteria like "works correctly" or "looks good" are not permitted.
 
@@ -455,7 +460,7 @@ Even if there are no gotchas, include the section with the text "None identified
 
 ## 10. Task Sizing Rules
 
-These rules prevent tasks from becoming too large for a single Cline session, and prevent them from becoming too trivial to justify the overhead of the approval cycle.
+These rules prevent tasks from becoming too large for a single OpenCode session, and prevent them from becoming too trivial to justify the overhead of the approval cycle.
 
 ### Upper bounds (task is too large if any are true)
 
@@ -465,6 +470,7 @@ These rules prevent tasks from becoming too large for a single Cline session, an
 - The `context` field exceeds 600 characters even after removing redundancy
 - The task requires reading more than 3 external reference documents
 - The task touches more than one logical subsystem (e.g. both scheduler and server)
+- The task cannot complete within a 120-minute OpenCode ACT session (use context window §65% threshold in `FORGE_AGENT_RULES.md §7` as a proxy: if the plan calls for more than ~6 major file operations, split)
 
 **Remedy:** Split the task. Prefer splitting along data structure vs behaviour lines (types first, then logic that uses them), or along "create stub" vs "implement" lines.
 
@@ -485,7 +491,7 @@ A task is atomic if: when it is complete, the full test suite passes, nothing it
 
 ## 11. Context Field Writing Guide
 
-The `context` field is injected directly into the Cline prompt. It is the primary specification. Write it as if you are a senior engineer leaving precise instructions for a colleague who knows the language and toolchain but has not read any other document about this project.
+The `context` field is injected directly into the OpenCode PLAN prompt. It is the primary specification. Write it as if you are a senior engineer leaving precise instructions for a colleague who knows the language and toolchain but has not read any other document about this project.
 
 ### Structure
 
@@ -500,7 +506,7 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 ### What to always include
 
 1. **The file path(s)** where the implementation goes. Not just the module name — the relative path from the project root.
-2. **The exact names** of every struct, enum, trait, function, or component to create. Cline must not invent names that later tasks will reference by a different name.
+2. **The exact names** of every struct, enum, trait, function, or component to create. OpenCode must not invent names that later tasks will reference by a different name.
 3. **The reference document** for any interface contract. Do not restate the contract inline — cite the document.
 4. **The test command** as a complete shell command, with the minimum test count where relevant (e.g. `>=5 tests`).
 5. **Feature flags** if required (e.g. `--features mock-hardware`).
@@ -510,8 +516,8 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 
 - Implementation details that are already obvious from the language/framework (e.g. "use `#[derive(Debug)]`")
 - Explanations of why the design is the way it is — that belongs in `TASKS_PHASE<NNN>.md`
-- Instructions to read a specific file unless the file is not in `docs/` (Cline always reads `ENVIRONMENT.md` and `ARCHITECTURE.md`)
-- Steps that are handled by The Forge (committing, pushing, writing reports)
+- Instructions to read standard docs — OpenCode agents always read `FORGE_AGENT_RULES.md`, `ENVIRONMENT.md`, `ARCHITECTURE.md`, and the relevant `TASKS_PHASE<NNN>.md` at session start; do not repeat these in the context field
+- Steps that are handled by The Forge (committing, pushing) or by OpenCode automatically (writing plan and implementation reports, staging changes)
 
 ### Tone and style
 
@@ -549,7 +555,7 @@ Tasks in phase N+1 should not prereq tasks in phase N unless they genuinely need
 
 ## 13. Tag Reference
 
-Tags are hints, not commands. They do not change The Forge's execution logic. They inform model selection (future) and serve as searchable metadata.
+Tags are hints, not commands. They do not change The Forge's execution logic. They serve as searchable metadata and may inform future model-selection logic.
 
 | Tag | Meaning | When to use |
 |-----|---------|-------------|
@@ -570,7 +576,7 @@ Use the following prompt structure when asking an LLM to generate tasks for a ne
 
 ```
 You are generating task definitions for The Forge autonomous development
-orchestrator. Read this entire spec before producing any output.
+orchestrator (OpenCode-based). Read this entire spec before producing any output.
 
 ## Spec summary (read in full before generating)
 
@@ -620,11 +626,11 @@ is complete. Be as precise as possible.>
 
 Produce two outputs:
 
-### Output 1: tasks.json entries
+### Output 1: tasks_phase<NNN>.json entries
 
 A JSON array of task objects conforming exactly to the spec.
-Output only the JSON — no explanation, no markdown fences around
-the JSON itself.
+This file will be placed at `.forge/tasks/tasks_phase<NNN>.json` inside the project repo.
+Output only the JSON — no explanation, no markdown fences around the JSON itself.
 
 ### Output 2: TASKS_PHASE<NNN>.md
 
@@ -638,7 +644,7 @@ Output only the markdown — no explanation before or after.
 
 After generation, validate against these checks before using the output:
 
-- [ ] Every task has all six fields (`id`, `description`, `phase`, `project`, `prereqs`, `context`, `tags`)
+- [ ] Every task has all six fields: `id`, `description`, `phase`, `project`, `prereqs`, `context`, `tags`
 - [ ] No task has a `repos` field
 - [ ] All `project` values are registered names (`sindristudio`, `anvilml`, `bloomeryui`)
 - [ ] All `prereqs` IDs exist in the array or in prior phases
@@ -648,15 +654,15 @@ After generation, validate against these checks before using the output:
 - [ ] Every `context` ends with a runnable acceptance criterion
 - [ ] Group letters in the TASKS_PHASE doc match the IDs in the JSON
 - [ ] Every task ID in the JSON appears in the TASKS_PHASE doc and vice versa
-- [ ] No cycle exists in the prereqs graph (trace manually for small sets; use `python forge.py --list` for large sets)
+- [ ] No cycle exists in the prereqs graph (trace manually for small sets; use `python forge.py --repo <project> --list` for large sets)
 
 ---
 
 ## 15. Complete Worked Example
 
-The following is a minimal but complete example of two tasks in a hypothetical Phase 3 targeting the `anvilml` project. It shows both the `tasks.json` entries and the corresponding `TASKS_PHASE003.md` sections.
+The following is a minimal but complete example of two tasks in a hypothetical Phase 3 targeting the `anvilml` project. It shows both the `tasks_phase003.json` entries and the corresponding `TASKS_PHASE003.md` sections.
 
-### tasks.json entries
+### tasks_phase003.json entries
 
 ```json
 [

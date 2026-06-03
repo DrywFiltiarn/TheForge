@@ -34,17 +34,18 @@ to read before reacting.
 
 ```
 forge/
-├── forge.py              # Main orchestrator
-├── forge_status.py       # Status and management CLI
-├── forge_setup.sh        # One-time setup script
-├── forge.env             # Your local environment config (gitignored)
+├── forge.py              # Entry point — run this
+├── forge_manage.py       # Management CLI — status, state mutations
+├── repos.json            # Repository registry
+├── forge.env             # Local environment config (gitignored)
+├── .venv/                # Python virtual environment (auto-created by forge_setup.sh)
 ├── forge-plan.md         # OpenCode agent — PLAN sessions (read-only permissions)
 ├── forge-act.md          # OpenCode agent — ACT sessions (implementation permissions)
 ├── state.json            # Runtime state — auto-managed, never edit by hand
 └── README.md             # This file
 
 AnvilML/docs/
-├── FORGE_AGENT_RULES.md  # Agent operating rules (replaces .clinerules)
+├── FORGE_AGENT_RULES.md  # Agent operating rules
 └── ...
 ```
 
@@ -57,6 +58,14 @@ Agent files (`forge-plan.md`, `forge-act.md`) are automatically synced to
 
 ```bash
 bash forge/forge_setup.sh
+```
+
+This creates a `.venv/` directory beside `forge.py`, installs all Python
+dependencies into it, and generates a `forge.env` template if one does not
+exist. Always run The Forge using the venv Python:
+
+```bash
+./forge/forge.sh --repo anvilml
 ```
 
 Then fill in `forge/forge.env` and create the two Discord channels.
@@ -143,18 +152,56 @@ Model selection is controlled via environment variables (see Configuration refer
 ## Running
 
 ```bash
-source forge/forge.env
+# ── Orchestrator ──────────────────────────────────────────────────
+./forge/forge.sh --repo anvilml                    # run from next unblocked task
+./forge/forge.sh --repo anvilml --dry-run          # show what would run
+./forge/forge.sh --repo anvilml --task P1-A3       # run one specific task
+./forge/forge.sh --repo anvilml --list             # show DAG status and exit
+./forge/forge.sh --repo anvilml --phase 4          # load phases 1–4
+./forge/forge.sh --repo anvilml --reset-task P1-A3      # reset (no git)
+./forge/forge.sh --repo anvilml --reset-task-git P1-A3  # reset + git
 
-python forge/forge_status.py              # check task status
-python forge/forge.py                     # run from next unblocked task
-python forge/forge.py --dry-run           # test without executing OpenCode
-python forge/forge.py --task P1-A3        # force a specific task
-python forge/forge.py --list              # show DAG status and exit
-python forge/forge.py --phase 4           # run only tasks in phase 4
+# ── Full monitoring view (tmux) ───────────────────────────────────
+./forge/forge_monitor.sh --repo anvilml
+
+# ── Management ────────────────────────────────────────────────────
+./forge/forge_manage.sh --repo anvilml             # full status table
+./forge/forge_manage.sh --repo anvilml --unblock   # ready-to-run only
 ```
 
-**Resume after any interruption:** just re-run `python forge/forge.py`.
+**Resume after any interruption:** just re-run `./forge/forge.sh --repo <project>`.
 State is written to disk before every external action — nothing is lost.
+
+---
+
+## Task management
+
+`forge_manage.py` provides status inspection and state mutations without running
+the full orchestrator. Safe to use while `forge.py` is running.
+
+```bash
+./forge/forge_manage.sh --repo anvilml                   # full status table
+./forge/forge_manage.sh --repo anvilml --unblock          # ready-to-run only
+./forge/forge_manage.sh --repo anvilml --phase 4          # limit to phases 1–4
+./forge/forge_manage.sh --repo anvilml --complete P4-A3   # manually mark complete
+./forge/forge_manage.sh --repo anvilml --fail P4-A3       # mark as failed
+./forge/forge_manage.sh --repo anvilml --reset P4-A3      # reset to unstarted
+./forge/forge_manage.sh --repo anvilml --review P4-A3     # mark needs-review
+./forge/forge_manage.sh --repo anvilml --clear-failed     # reset all failed
+./forge/forge_manage.sh --repo anvilml --clear-review     # reset all needs-review
+```
+
+### When to use each command
+
+| Command | When to use |
+|---------|-------------|
+| `--complete` | Push was rejected but you reviewed the implementation and it's acceptable. Marks the task done and unblocks dependents. |
+| `--fail` | Explicitly mark a task failed so The Forge stops treating it as in-progress. |
+| `--reset` | Re-run a task from scratch — clears plan approval and current plan. No git changes. |
+| `--review` | Flag a task for manual inspection. Blocks all dependent tasks until resolved via `--complete` or `--reset`. |
+| `--clear-failed` | Bulk-reset all failed tasks to unstarted after investigating root cause. |
+| `--clear-review` | Bulk-reset all needs-review tasks after a review pass. |
+| `--unblock` | Quick scan of what's ready to run and what's currently blocking progress. |
 
 ---
 
@@ -175,9 +222,9 @@ repository as part of the post-approval commit, so the full build history is in 
 ## Monitoring a live session
 
 ```bash
-tail -f forge/opencode.log    # agent tool calls, prose output, session summary
-tail -f forge/context.log     # live context window usage (updates per step)
-tail -f forge/forge.log       # orchestrator decisions, approvals, errors
+tail -f forge/logs/opencode.log    # agent tool calls, prose output, session summary
+tail -f forge/logs/context.log     # live context window usage (updates per step)
+tail -f forge/logs/forge.log       # orchestrator decisions, approvals, errors
 ```
 
 ---
@@ -192,11 +239,11 @@ If all retries fail, the task is marked `failed` and the Forge stops.
 ### Retry a failed task with clean repos
 ```bash
 # Hard-reset all touched repos to origin/develop, then retry
-python forge/forge.py --reset-task-git P1-A3
+./forge/forge.sh --reset-task-git P1-A3
 
 # Or reset state only (keep whatever the agent wrote locally, inspect first)
-python forge/forge.py --reset-task P1-A3
-python forge/forge.py --task P1-A3
+./forge/forge.sh --reset-task P1-A3
+./forge/forge.sh --task P1-A3
 ```
 
 `--reset-task-git` runs `git fetch origin develop && git reset --hard origin/develop`
@@ -214,14 +261,14 @@ ensures the retry starts from a known-good codebase with no half-written code.
 
 ### Task needs review (push rejected)
 ```bash
-python forge/forge_status.py              # see what's in review
+./forge/forge_manage.sh --repo anvilml   # see what's in review
 
 # After reviewing git log and deciding it's acceptable:
-python forge/forge_status.py --complete P1-A3
+./forge/forge_manage.sh --repo anvilml --complete P1-A3
 
 # After deciding it needs a full redo:
-python forge/forge.py --reset-task-git P1-A3
-python forge/forge.py --task P1-A3
+./forge/forge.sh --reset-task-git P1-A3
+./forge/forge.sh --task P1-A3
 ```
 
 ---

@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# forge.sh — Run The Forge orchestrator with venv activated.
+# forge_manage.sh — Run The Forge management CLI with venv activated.
 #
-# Use this script rather than invoking forge.py directly.
-# For the full tmux monitoring view, use forge_monitor.sh instead.
+# Use this script rather than invoking forge_manage.py directly.
 #
 # Usage:
-#   ./forge.sh --repo anvilml
-#   ./forge.sh --repo anvilml --task P4-A3
-#   ./forge.sh --repo anvilml --phase 4 --dry-run
-#   ./forge.sh --repo anvilml --list
-#   ./forge.sh --repo anvilml --reset-task P4-A3
-#   ./forge.sh --repo anvilml --reset-task-git P4-A3
+#   ./forge_manage.sh --repo anvilml
+#   ./forge_manage.sh --repo anvilml --unblock
+#   ./forge_manage.sh --repo anvilml --complete P4-A3
+#   ./forge_manage.sh --repo anvilml --fail P4-A3
+#   ./forge_manage.sh --repo anvilml --reset P4-A3
+#   ./forge_manage.sh --repo anvilml --review P4-A3
+#   ./forge_manage.sh --repo anvilml --clear-failed
+#   ./forge_manage.sh --repo anvilml --clear-review
+#   ./forge_manage.sh --repo anvilml --phase 4
 
 set -euo pipefail
 
@@ -36,4 +38,4 @@ fi
 source "$ENV_FILE"
 source "$SCRIPT_DIR/.venv/bin/activate"
 
-exec "$VENV_PYTHON" "$SCRIPT_DIR/forge.py" "$@"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/forge_manage.py" "$@"
