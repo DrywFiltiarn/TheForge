@@ -1681,6 +1681,7 @@ def build_opencode_cmd(prompt: str, plan_mode: bool, cwd: Path,
     cmd = [
         OPENCODE_BIN, "run",
         "--format", "json",
+        "--thinking",
         "--dangerously-skip-permissions",
         "--dir", str(cwd),
         "--agent", agent,
@@ -1797,7 +1798,8 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
       step_finish  — iteration ends; tokens, cost, reason
                      reason="tool-calls" -> suppressed (next tool call follows immediately)
                      reason="stop"       -> model finished; emit compact token summary
-      text         — model prose output (narration, reasoning commentary, final answer)
+      text         — model prose output (narration, final answer)
+      reasoning    — model thinking block; displayed in dark grey, distinct from prose
       error        — session-level error from OpenCode or the provider
 
     Token tracking:
@@ -1844,7 +1846,7 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
     if etype == "step_start":
         flush_tokens()
 
-    # text: model prose, narration, reasoning commentary
+    # text: model prose and final answer
     elif etype == "text":
         flush_tokens()
         part = event.get("part", {})
@@ -1853,6 +1855,25 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
             clf.write("\n")
             for line in text.splitlines():
                 clf.write(f"  {line}\n")
+            clf.flush()
+
+    # reasoning: model thinking block — dark grey, visually distinct from prose
+    elif etype == "reasoning":
+        flush_tokens()
+        part = event.get("part", {})
+        text = part.get("text", "").strip()
+        if text:
+            DIM   = "\033[90m"   # dark grey (bright black)
+            RESET = "\033[0m"
+            timing = part.get("time", {})
+            t_start = timing.get("start", 0)
+            t_end   = timing.get("end",   0)
+            dur_ms  = (t_end - t_start) if (t_start and t_end) else 0
+            dur_str = f" ({dur_ms}ms)" if dur_ms else ""
+            clf.write(f"\n{DIM}  ~ thinking{dur_str}\n")
+            for line in text.splitlines():
+                clf.write(f"  ~ {line}\n")
+            clf.write(f"  ~{RESET}\n")
             clf.flush()
 
     # tool_use: call + result pair
