@@ -1785,6 +1785,60 @@ def _summarise_command(cmd: str) -> str:
     return s[:80]
 
 
+def _log_width() -> int:
+    """
+    Return the usable terminal column width for log line wrapping.
+    Reads the live terminal size each call so that resizing takes effect.
+    Falls back to 120 if stdout is not a tty (e.g. redirected to file).
+    Capped at 220 to avoid absurd widths on ultra-wide displays.
+    """
+    import shutil as _shutil
+    try:
+        w = _shutil.get_terminal_size(fallback=(120, 40)).columns
+        return min(max(w, 60), 220)
+    except Exception:
+        return 120
+
+
+def _wrap_log_lines(text: str, first_prefix: str, cont_prefix: str) -> list[str]:
+    """
+    Wrap a block of text for opencode.log output.
+
+    Each logical line in `text` is wrapped at the current terminal width.
+    The first physical line of each logical line uses `first_prefix`;
+    all continuation lines use `cont_prefix` (must be same width or wider
+    for readability).
+
+    Returns a list of complete lines including newline characters.
+    """
+    import textwrap as _tw
+    width  = _log_width()
+    result = []
+    for logical_line in text.splitlines():
+        if not logical_line:
+            result.append(first_prefix.rstrip() + "\n")
+            continue
+        available = width - len(first_prefix)
+        if available < 20:
+            # Terminal too narrow to wrap usefully — write as-is
+            result.append(f"{first_prefix}{logical_line}\n")
+            continue
+        if len(logical_line) <= available:
+            result.append(f"{first_prefix}{logical_line}\n")
+        else:
+            chunks = _tw.wrap(
+                logical_line,
+                width=width,
+                initial_indent=first_prefix,
+                subsequent_indent=cont_prefix,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            for chunk in chunks:
+                result.append(chunk + "\n")
+    return result
+
+
 def _write_opencode_log(clf, event: dict, token_buf: list[str],
                         task_id: str = "", mode: str = "",
                         session_tokens: dict = None) -> None:
@@ -1798,8 +1852,7 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
       step_finish  — iteration ends; tokens, cost, reason
                      reason="tool-calls" -> suppressed (next tool call follows immediately)
                      reason="stop"       -> model finished; emit compact token summary
-      text         — model prose output (narration, final answer)
-      reasoning    — model thinking block; displayed in dark grey, distinct from prose
+      text         — model prose output (narration, reasoning commentary, final answer)
       error        — session-level error from OpenCode or the provider
 
     Token tracking:
@@ -1846,23 +1899,23 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
     if etype == "step_start":
         flush_tokens()
 
-    # text: model prose and final answer
+    # text: model prose, narration, reasoning commentary
     elif etype == "text":
         flush_tokens()
         part = event.get("part", {})
         text = part.get("text", "").strip()
         if text:
             clf.write("\n")
-            for line in text.splitlines():
-                clf.write(f"  {line}\n")
+            for out_line in _wrap_log_lines(text, "  ", "    "):
+                clf.write(out_line)
             clf.flush()
 
     # reasoning: model thinking block — dark grey, visually distinct from prose
     elif etype == "reasoning":
         flush_tokens()
         part = event.get("part", {})
-        text = part.get("text", "").strip()
-        if text:
+        rtext = part.get("text", "").strip()
+        if rtext:
             DIM   = "\033[90m"   # dark grey (bright black)
             RESET = "\033[0m"
             timing = part.get("time", {})
@@ -1871,8 +1924,8 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
             dur_ms  = (t_end - t_start) if (t_start and t_end) else 0
             dur_str = f" ({dur_ms}ms)" if dur_ms else ""
             clf.write(f"\n{DIM}  ~ thinking{dur_str}\n")
-            for line in text.splitlines():
-                clf.write(f"  ~ {line}\n")
+            for out_line in _wrap_log_lines(rtext, "  ~ ", "    "):
+                clf.write(out_line)
             clf.write(f"  ~{RESET}\n")
             clf.flush()
 
@@ -1915,29 +1968,38 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
                     hint = f" {str(inp[key])}"
                     break
 
-        clf.write(f"  [{ts}] {tool_name}{hint}{dur_str}\n")
+        call_line = f"  [{ts}] {tool_name}{hint}{dur_str}"
+        # ts is always HH:MM:SS (8 chars); continuation aligns after "  [HH:MM:SS] "
+        call_cont  = " " * (2 + 1 + 8 + 1 + 1)  # "  [" + ts + "] "
+        for out_line in _wrap_log_lines(call_line, "", call_cont):
+            clf.write(out_line)
 
         status_val = state.get("status", "")
         if status_val == "error" or (isinstance(out, str) and out.lower().startswith("error")):
             err_text = str(out)[:200] if isinstance(out, str) else str(state.get("error", ""))[:200]
-            clf.write(f"       X {err_text}\n")
+            for out_line in _wrap_log_lines(err_text, "       X ", "         "):
+                clf.write(out_line)
         elif tool_name in ("read", "read_files", "readFiles") and isinstance(out, str):
             lc = out.count("\n")
-            clf.write(f"       + {title or 'file'} ({lc} lines)\n")
+            clf.write(f"       + {title or 'file'} ({lc} lines)\n")  # always short
         elif tool_name in ("bash", "run_commands", "execute_command") and isinstance(out, str):
             lines = [l for l in out.splitlines() if l.strip()]
             if lines:
-                clf.write(f"       + {lines[0]}\n")
+                for out_line in _wrap_log_lines(lines[0], "       + ", "         "):
+                    clf.write(out_line)
                 for l in lines[1:]:
-                    clf.write(f"         {l}\n")
+                    for out_line in _wrap_log_lines(l, "         ", "         "):
+                        clf.write(out_line)
             else:
                 clf.write("       +\n")
         elif isinstance(out, str) and out.strip():
             lines = out.strip().splitlines()
-            clf.write(f"       + {lines[0]}\n")
+            for out_line in _wrap_log_lines(lines[0], "       + ", "         "):
+                clf.write(out_line)
             for l in lines[1:]:
                 if l.strip():
-                    clf.write(f"         {l}\n")
+                    for out_line in _wrap_log_lines(l, "         ", "         "):
+                        clf.write(out_line)
         else:
             clf.write(f"       +\n")
         clf.flush()
