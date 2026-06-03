@@ -1733,11 +1733,14 @@ def build_opencode_cmd(prompt: str, plan_mode: bool, cwd: Path,
     return cmd
 
 def _update_context_display(task_id: str, mode: str, pct: float,
-                             tokens_used: int, tokens_total: int) -> None:
+                             tokens_used: int, tokens_total: int,
+                             session_start: float = 0.0) -> None:
     """
     Overwrite context.log with the current context usage status.
     This file is tailed in the fourth tmux pane for live monitoring.
-    Color coding: green <50%, yellow 50–65%, red >=65%.
+    Color coding: green <50%, yellow 50-65%, red >=65%.
+    session_start: time.monotonic() value from when the OpenCode session began.
+    When provided, elapsed runtime is shown in the display.
     """
     if pct >= 65:
         bar_char = "█"
@@ -1757,10 +1760,17 @@ def _update_context_display(task_id: str, mode: str, pct: float,
     filled    = int(bar_width * pct / 100)
     bar       = bar_char * filled + "·" * (bar_width - filled)
 
+    if session_start > 0.0:
+        elapsed = time.monotonic() - session_start
+        runtime = _fmt_duration(elapsed)
+    else:
+        runtime = "—"
+
     content = (
         f"{color}{'─' * 54}{reset}\n"
         f"  Task    : {task_id}  [{mode}]\n"
-        f"  Updated : {_ts()}\n"
+        f"  Runtime : {runtime}\n"
+        f"  Updated : {_ts_local_display()}\n"
         f"{color}{'─' * 54}{reset}\n"
         f"\n"
         f"  {color}Context Usage:  {pct:.1f}%  {status}{reset}\n"
@@ -1891,7 +1901,8 @@ def _summarise_command(cmd: str) -> str:
 
 def _write_opencode_log(clf, event: dict, token_buf: list[str],
                         task_id: str = "", mode: str = "",
-                        session_tokens: dict = None) -> None:
+                        session_tokens: dict = None,
+                        session_start: float = 0.0) -> None:
     """
     Write a human-readable line to opencode.log for a single OpenCode NDJSON event.
 
@@ -2058,7 +2069,8 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
         ctx_total = OPENCODE_CONTEXT_WINDOW
         pct       = (ctx_used / ctx_total) * 100.0 if ctx_total else 0.0
         prev_pct  = session_tokens.get("_last_logged_pct", 0.0)
-        _update_context_display(task_id, mode, pct, ctx_used, ctx_total)
+        _update_context_display(task_id, mode, pct, ctx_used, ctx_total,
+                                 session_start=session_start)
 
         if reason == "stop":
             rsn_str = f"  rsn={rsn_step:,}" if rsn_step else ""
@@ -2102,7 +2114,8 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
             session_tokens["input_total"] = tokens_after
             _update_context_display(task_id, mode,
                                     (tokens_after / OPENCODE_CONTEXT_WINDOW) * 100.0,
-                                    tokens_after, OPENCODE_CONTEXT_WINDOW)
+                                    tokens_after, OPENCODE_CONTEXT_WINDOW,
+                                    session_start=session_start)
 
     # error: always visible in red; propagated to forge.log
     elif etype == "error":
@@ -2175,6 +2188,7 @@ def run_opencode(
         text_output:    list[str] = []
         token_buf:      list[str] = []
         session_tokens: dict      = {}
+        session_start:  float     = time.monotonic()
         exit_code = -1
 
         with open(OPENCODE_LOG_FILE, "a") as clf:
@@ -2183,7 +2197,8 @@ def run_opencode(
                 f"[{_ts()}] [{task_id}] OpenCode {mode_label} — attempt {attempt}/{OPENCODE_RETRIES}\n"
                 f"{'─'*60}\n"
             )
-        _update_context_display(task_id, mode_label, 0.0, 0, OPENCODE_CONTEXT_WINDOW)
+        _update_context_display(task_id, mode_label, 0.0, 0, OPENCODE_CONTEXT_WINDOW,
+                                session_start=session_start)
 
         try:
             proc = subprocess.Popen(
@@ -2201,7 +2216,8 @@ def run_opencode(
                         event = json.loads(raw)
                         _write_opencode_log(clf, event, token_buf,
                                             task_id=task_id, mode=mode_label,
-                                            session_tokens=session_tokens)
+                                            session_tokens=session_tokens,
+                                            session_start=session_start)
                         etype = event.get("type", "")
                         # Collect text output for plan extraction
                         if etype == "text":
