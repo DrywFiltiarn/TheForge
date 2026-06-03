@@ -50,6 +50,10 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo as _ZoneInfo  # type: ignore
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote
@@ -81,6 +85,7 @@ LOG_FILE         = FORGE_DIR / "forge.log"
 OPENCODE_LOG_FILE   = FORGE_DIR / "opencode.log"
 CONTEXT_LOG_FILE = FORGE_DIR / "context.log"
 OPENCODE_SKIPPED_LOG_FILE = FORGE_DIR / "opencode-skipped.log"  # unhandled event types
+COMPACTION_LOG_FILE       = FORGE_DIR / "compaction.log"         # compaction events (structured)
 
 # Resolved in main() after --repo is validated.
 # Points to <repo>/.forge/state.json — scoped to the active repository.
@@ -391,8 +396,15 @@ REJECT_EMOJI = "❌"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
+_LOCAL_TZ = _ZoneInfo("Europe/Amsterdam")
+
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return current local time (Europe/Amsterdam) as ISO 8601 string."""
+    return datetime.now(_LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+def _ts_local_display() -> str:
+    """Return current local time (Europe/Amsterdam) as HH:MM:SS for log display."""
+    return datetime.now(_LOCAL_TZ).strftime("%H:%M:%S")
 
 def log(msg: str, level: str = "INFO") -> None:
     line = f"[{_ts()}] [{level}] {msg}"
@@ -1681,6 +1693,7 @@ def build_opencode_cmd(prompt: str, plan_mode: bool, cwd: Path,
     cmd = [
         OPENCODE_BIN, "run",
         "--format", "json",
+        "--thinking",
         "--dangerously-skip-permissions",
         "--dir", str(cwd),
         "--agent", agent,
@@ -1733,6 +1746,69 @@ def _update_context_display(task_id: str, mode: str, pct: float,
         CONTEXT_LOG_FILE.write_text(content)
     except Exception:
         pass  # non-critical
+
+
+def _write_compaction_log(task_id: str, mode: str,
+                          tokens_before: int, tokens_after: int) -> None:
+    """Append a structured entry to compaction.log on OpenCode auto-compaction."""
+    now = datetime.now(_LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z")
+    if tokens_before > 0 and tokens_after > 0:
+        reduction = 100.0 * (1 - tokens_after / tokens_before)
+        reduction_str = f"{reduction:.1f}%"
+    else:
+        reduction_str = "unknown"
+    line = (f"{now}\t{task_id}\t{mode}\t"
+            f"{tokens_before}\t{tokens_after}\t{reduction_str}\n")
+    try:
+        if not COMPACTION_LOG_FILE.exists():
+            with open(COMPACTION_LOG_FILE, "w") as f:
+                f.write("datetime\ttask_id\tmode\ttokens_before\ttokens_after\treduction\n")
+        with open(COMPACTION_LOG_FILE, "a") as f:
+            f.write(line)
+    except Exception as e:
+        log_warn(f"[{task_id}] Could not write compaction.log: {e}")
+
+
+def _log_width() -> int:
+    """Return usable terminal column width for log line wrapping."""
+    import shutil as _shutil
+    try:
+        w = _shutil.get_terminal_size(fallback=(120, 40)).columns
+        return min(max(w, 60), 220)
+    except Exception:
+        return 120
+
+
+def _wrap_log_lines(text: str, first_prefix: str, cont_prefix: str) -> list[str]:
+    """
+    Wrap a block of text for opencode.log output at terminal width.
+    Returns a list of complete lines including newline characters.
+    """
+    import textwrap as _tw
+    width  = _log_width()
+    result = []
+    for logical_line in text.splitlines():
+        if not logical_line:
+            result.append(first_prefix.rstrip() + "\n")
+            continue
+        available = width - len(first_prefix)
+        if available < 20:
+            result.append(f"{first_prefix}{logical_line}\n")
+            continue
+        if len(logical_line) <= available:
+            result.append(f"{first_prefix}{logical_line}\n")
+        else:
+            chunks = _tw.wrap(
+                logical_line,
+                width=width,
+                initial_indent=first_prefix,
+                subsequent_indent=cont_prefix,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            for chunk in chunks:
+                result.append(chunk + "\n")
+    return result
 
 
 def _summarise_command(cmd: str) -> str:
@@ -1789,70 +1865,67 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
                         session_tokens: dict = None) -> None:
     """
     Write a human-readable line to opencode.log for a single OpenCode NDJSON event.
-    Also maintains cumulative token counts and writes context usage to context.log.
 
-    OpenCode --format json event types (from observed schema):
-      step_start   — iteration begins (suppressed — noise with no user value)
-      tool_use     — tool call + result combined; tool name, input, output, timing
-      step_finish  — iteration ends; tokens, cost, reason
-                     reason="tool-calls" -> suppressed (next tool call follows immediately)
-                     reason="stop"       -> model finished; emit compact token summary
-      text         — model prose output (narration, reasoning commentary, final answer)
-      error        — session-level error from OpenCode or the provider
-
-    Token tracking:
-      step_finish carries per-step token counts. Cumulative input tokens are used
-      to approximate context growth against OPENCODE_CONTEXT_WINDOW.
-
-      session_tokens dict (mutated in-place by caller):
-        "input_total"    — cumulative input tokens this session
-        "output_total"   — cumulative output tokens this session
-        "reasoning_total"— cumulative reasoning tokens (non-zero if model emits thinking blocks)
-        "cache_read"     — cumulative cache read tokens
-        "cache_write"    — cumulative cache write tokens
-        "cost_total"     — cumulative cost (float, USD)
-        "steps"          — number of step_finish events seen
-        "_last_logged_pct" — last context % that triggered a threshold log line
-
-    Log structure goal: readable narrative flow.
-      - Model prose (text events) appears inline between tool calls
-      - Tool calls show a call / result as a pair with no surrounding separators
-      - Context % appears only when crossing 50% / 65% thresholds, and at session end
-      - Errors are always visible with X prefix and also written to forge.log
+    Event types:
+      step_start       — suppressed (noise)
+      text             — model prose output
+      reasoning        — thinking block; dark grey, visually distinct from prose
+      tool_use         — tool call + result pair
+      step_finish      — token accounting; emits on stop or context threshold crossing
+      session.compacted — auto-compaction fired; orange warning
+      error            — session error; red, propagated to forge.log
     """
     if session_tokens is None:
         session_tokens = {}
 
     etype = event.get("type", "")
 
-    # Timestamp: OpenCode uses Unix milliseconds in the "timestamp" field
     raw_ts = event.get("timestamp")
     if isinstance(raw_ts, (int, float)) and raw_ts > 1_000_000_000_000:
-        ts = datetime.fromtimestamp(raw_ts / 1000, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
+        ts = datetime.fromtimestamp(raw_ts / 1000, tz=timezone.utc).astimezone(_LOCAL_TZ).strftime("%H:%M:%S")
     else:
-        ts = _ts()[11:19]  # fallback: HH:MM:SS from forge clock
+        ts = _ts_local_display()
 
     def flush_tokens() -> None:
         if token_buf:
-            text = "".join(t for t in token_buf if not t.startswith("\x00")).strip()
-            if text:
-                clf.write(f"  {text}\n")
+            t = "".join(x for x in token_buf if not x.startswith("\x00")).strip()
+            if t:
+                clf.write(f"  {t}\n")
                 clf.flush()
             token_buf.clear()
 
-    # step_start: suppressed — no user value, tool calls provide all structure
+    # step_start: suppressed
     if etype == "step_start":
         flush_tokens()
 
-    # text: model prose, narration, reasoning commentary
+    # text: model prose and final answer
     elif etype == "text":
         flush_tokens()
         part = event.get("part", {})
         text = part.get("text", "").strip()
         if text:
             clf.write("\n")
-            for line in text.splitlines():
-                clf.write(f"  {line}\n")
+            for out_line in _wrap_log_lines(text, "  ", "    "):
+                clf.write(out_line)
+            clf.flush()
+
+    # reasoning: thinking block — dark grey
+    elif etype == "reasoning":
+        flush_tokens()
+        part  = event.get("part", {})
+        rtext = part.get("text", "").strip()
+        if rtext:
+            DIM   = "\033[90m"
+            RESET = "\033[0m"
+            timing  = part.get("time", {})
+            t_start = timing.get("start", 0)
+            t_end   = timing.get("end",   0)
+            dur_ms  = (t_end - t_start) if (t_start and t_end) else 0
+            dur_str = f" ({dur_ms}ms)" if dur_ms else ""
+            clf.write(f"\n{DIM}  ~ thinking{dur_str}\n")
+            for out_line in _wrap_log_lines(rtext, "  ~ ", "    "):
+                clf.write(out_line)
+            clf.write(f"  ~{RESET}\n")
             clf.flush()
 
     # tool_use: call + result pair
@@ -1894,31 +1967,39 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
                     hint = f" {str(inp[key])}"
                     break
 
-        clf.write(f"  [{ts}] {tool_name}{hint}{dur_str}\n")
+        call_line = f"  [{ts}] {tool_name}{hint}{dur_str}"
+        call_cont = " " * (2 + 1 + 8 + 1 + 1)
+        for out_line in _wrap_log_lines(call_line, "", call_cont):
+            clf.write(out_line)
 
         status_val = state.get("status", "")
         if status_val == "error" or (isinstance(out, str) and out.lower().startswith("error")):
-            err_text = str(out)[:200] if isinstance(out, str) else str(state.get("error", ""))[:200]
-            clf.write(f"       X {err_text}\n")
+            err_text = str(out) if isinstance(out, str) else str(state.get("error", ""))
+            for out_line in _wrap_log_lines(err_text, "       X ", "         "):
+                clf.write(out_line)
         elif tool_name in ("read", "read_files", "readFiles") and isinstance(out, str):
             lc = out.count("\n")
             clf.write(f"       + {title or 'file'} ({lc} lines)\n")
         elif tool_name in ("bash", "run_commands", "execute_command") and isinstance(out, str):
             lines = [l for l in out.splitlines() if l.strip()]
             if lines:
-                clf.write(f"       + {lines[0]}\n")
+                for out_line in _wrap_log_lines(lines[0], "       + ", "         "):
+                    clf.write(out_line)
                 for l in lines[1:]:
-                    clf.write(f"         {l}\n")
+                    for out_line in _wrap_log_lines(l, "         ", "         "):
+                        clf.write(out_line)
             else:
                 clf.write("       +\n")
         elif isinstance(out, str) and out.strip():
             lines = out.strip().splitlines()
-            clf.write(f"       + {lines[0]}\n")
+            for out_line in _wrap_log_lines(lines[0], "       + ", "         "):
+                clf.write(out_line)
             for l in lines[1:]:
                 if l.strip():
-                    clf.write(f"         {l}\n")
+                    for out_line in _wrap_log_lines(l, "         ", "         "):
+                        clf.write(out_line)
         else:
-            clf.write(f"       +\n")
+            clf.write("       +\n")
         clf.flush()
 
     # step_finish: token accounting; emit only on stop or threshold crossing
@@ -1967,11 +2048,34 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
         elif pct >= 50 and prev_pct < 50:
             clf.write(f"  [{ts}] context {pct:.1f}% ({ctx_used:,}/{ctx_total:,})\n")
             session_tokens["_last_logged_pct"] = pct
-        # reason="tool-calls" below threshold: no output
-
         clf.flush()
 
-    # error: always visible; propagated to forge.log
+    # session.compacted: auto-compaction — orange warning
+    elif etype == "session.compacted":
+        flush_tokens()
+        ORANGE = "\033[38;5;208m"
+        RESET  = "\033[0m"
+        tokens_before = int(event.get("tokensBefore", session_tokens.get("input_total", 0)))
+        tokens_after  = int(event.get("tokensAfter",  0))
+        if tokens_before > 0 and tokens_after > 0:
+            reduction = 100.0 * (1 - tokens_after / tokens_before)
+            detail = (f"context compacted: {tokens_before:,} → {tokens_after:,} tokens "
+                      f"({reduction:.1f}% reduction)")
+        elif tokens_before > 0:
+            detail = f"context compacted from ~{tokens_before:,} tokens (post-compaction size unknown)"
+        else:
+            detail = "context compacted (token counts unavailable)"
+        clf.write(f"\n{ORANGE}  [{ts}] ⚡ COMPACTION — {detail}{RESET}\n")
+        clf.flush()
+        log_warn(f"[{task_id}] OpenCode auto-compaction fired — {detail}")
+        _write_compaction_log(task_id, mode, tokens_before, tokens_after)
+        if tokens_after > 0:
+            session_tokens["input_total"] = tokens_after
+            _update_context_display(task_id, mode,
+                                    (tokens_after / OPENCODE_CONTEXT_WINDOW) * 100.0,
+                                    tokens_after, OPENCODE_CONTEXT_WINDOW)
+
+    # error: always visible in red; propagated to forge.log
     elif etype == "error":
         flush_tokens()
         err_obj = event.get("error", {})
@@ -1982,7 +2086,9 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
         else:
             name    = "error"
             message = str(err_obj)
-        clf.write(f"\n  [{ts}] ERROR {name}: {message}\n")
+        RED   = "\033[91m"
+        RESET = "\033[0m"
+        clf.write(f"\n{RED}  [{ts}] ERROR {name}: {message}{RESET}\n")
         clf.flush()
         log_err(f"[{task_id}] OpenCode session error -- {name}: {message[:160]}")
 
