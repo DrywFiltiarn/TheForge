@@ -248,14 +248,23 @@ def write_current_task_file(task: dict, step: str, status: str) -> None:
 # ─── Branch management ────────────────────────────────────────────────────────
 
 def get_current_branch(repo_path: Path) -> Optional[str]:
-    """Return the name of the currently checked-out branch, or None on error."""
+    """Return the name of the currently checked-out branch, or None on error.
+
+    git rev-parse --abbrev-ref HEAD normally returns the bare branch name
+    (e.g. 'opencode'), but in some git versions or repo states it returns
+    'heads/opencode'. Strip the 'heads/' prefix unconditionally so the
+    comparison against repos.json branch names is always reliable.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=repo_path, capture_output=True, text=True,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            branch = result.stdout.strip()
+            if branch.startswith("heads/"):
+                branch = branch[len("heads/"):]
+            return branch
     except Exception:
         pass
     return None
@@ -1875,14 +1884,14 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
             hint    = f" $ {_summarise_command(raw_cmd)}"
         elif tool_name in ("glob", "grep", "search"):
             q    = inp.get("pattern", inp.get("query", inp.get("glob", "")))
-            hint = f" {str(q)[:80]!r}"
+            hint = f" {str(q)!r}"
         elif tool_name == "list":
             hint = f" {inp.get('path', '')}"
         else:
             hint = ""
             for key in ("filePath", "path", "command", "url", "query", "description"):
                 if key in inp:
-                    hint = f" {str(inp[key])[:80]}"
+                    hint = f" {str(inp[key])}"
                     break
 
         clf.write(f"  [{ts}] {tool_name}{hint}{dur_str}\n")
@@ -1895,11 +1904,19 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
             lc = out.count("\n")
             clf.write(f"       + {title or 'file'} ({lc} lines)\n")
         elif tool_name in ("bash", "run_commands", "execute_command") and isinstance(out, str):
-            first = next((l.strip() for l in out.splitlines() if l.strip()), "")
-            clf.write(f"       + {first[:160]}\n" if first else "       +\n")
+            lines = [l for l in out.splitlines() if l.strip()]
+            if lines:
+                clf.write(f"       + {lines[0]}\n")
+                for l in lines[1:]:
+                    clf.write(f"         {l}\n")
+            else:
+                clf.write("       +\n")
         elif isinstance(out, str) and out.strip():
-            shown = " ".join(out.strip().split())[:120]
-            clf.write(f"       + {shown}\n")
+            lines = out.strip().splitlines()
+            clf.write(f"       + {lines[0]}\n")
+            for l in lines[1:]:
+                if l.strip():
+                    clf.write(f"         {l}\n")
         else:
             clf.write(f"       +\n")
         clf.flush()
@@ -1965,7 +1982,7 @@ def _write_opencode_log(clf, event: dict, token_buf: list[str],
         else:
             name    = "error"
             message = str(err_obj)
-        clf.write(f"\n  [{ts}] ERROR {name}: {message[:240]}\n")
+        clf.write(f"\n  [{ts}] ERROR {name}: {message}\n")
         clf.flush()
         log_err(f"[{task_id}] OpenCode session error -- {name}: {message[:160]}")
 
