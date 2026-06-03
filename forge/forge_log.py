@@ -15,7 +15,7 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo as _ZoneInfo  # type: ignore
 
-from .forge_config import LOG_FILE
+from . import forge_config as cfg
 
 # ─── Timezone ─────────────────────────────────────────────────────────────────
 

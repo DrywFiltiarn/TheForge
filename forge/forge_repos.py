@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .forge_log import log, log_err, log_warn, _ts
+from . import forge_config as cfg
 
 # Populated in main() after logging is ready.
 # Maps project name -> { "path": Path, "branch": str, "github_url": str }

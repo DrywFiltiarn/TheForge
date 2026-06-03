@@ -49,6 +49,7 @@ done
 FORGE_CMD="source '${ENV_FILE}' && python3 '${SCRIPT_DIR}/forge.py'${FORGE_ARGS}; echo '[forge exited — press any key]'; read -n1"
 
 # Touch log files so tail -f doesn't error before forge writes anything
+mkdir -p "${FORGE_LOG%/*}"
 touch "$FORGE_LOG" "$OPENCODE_LOG"
 
 # Initialise context.log with a waiting state

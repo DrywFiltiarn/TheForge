@@ -12,7 +12,6 @@ from .forge_log import log, log_err, log_warn
 from .forge_repos import (
     resolve_project_path,
     resolve_project_branch,
-    has_dirty_working_tree_path,  # defined below — forward ref handled at end
 )
 
 

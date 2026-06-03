@@ -6,7 +6,7 @@
   },
   "anvilml": {
     "path": "/home/dryw/AnvilML",
-    "branch": "opencode",
+    "branch": "main",
     "github_url": "https://github.com/DrywFiltiarn/AnvilML.git"
   },
   "bloomeryui": {

@@ -126,6 +126,57 @@ def _summarise_command(cmd: str) -> str:
     # Default: return full command; _wrap_log_lines handles terminal wrapping
     return s
 
+def _update_context_display(task_id: str, mode: str, pct: float,
+                             tokens_used: int, tokens_total: int,
+                             session_start: float = 0.0) -> None:
+    """
+    Overwrite context.log with the current context usage status.
+    This file is tailed in the fourth tmux pane for live monitoring.
+    Color coding: green <50%, yellow 50-65%, red >=65%.
+    """
+    if pct >= 65:
+        bar_char = "█"
+        status   = "⚠  APPROACHING LIMIT"
+        color    = "\033[91m"  # red
+    elif pct >= 50:
+        bar_char = "▓"
+        status   = "◉  MONITOR"
+        color    = "\033[93m"  # yellow
+    else:
+        bar_char = "░"
+        status   = "●  OK"
+        color    = "\033[92m"  # green
+
+    reset     = "\033[0m"
+    bar_width = 40
+    filled    = int(bar_width * pct / 100)
+    bar       = bar_char * filled + "·" * (bar_width - filled)
+
+    if session_start > 0.0:
+        elapsed = time.monotonic() - session_start
+        runtime = _fmt_duration(elapsed)
+    else:
+        runtime = "—"
+
+    content = (
+        f"{color}{'─' * 54}{reset}\n"
+        f"  Task    : {task_id}  [{mode}]\n"
+        f"  Runtime : {runtime}\n"
+        f"  Updated : {_ts_local_display()}\n"
+        f"{color}{'─' * 54}{reset}\n"
+        f"\n"
+        f"  {color}Context Usage:  {pct:.1f}%  {status}{reset}\n"
+        f"\n"
+        f"  [{color}{bar}{reset}]\n"
+        f"  {tokens_used:,} / {tokens_total:,} tokens\n"
+        f"\n"
+        f"  Threshold : {color}65% = {int(tokens_total * 0.65):,} tokens{reset}\n"
+        f"{color}{'─' * 54}{reset}\n"
+    )
+    try:
+        cfg.CONTEXT_LOG_FILE.write_text(content)
+    except Exception:
+        pass
 
 def _write_opencode_log(clf, event: dict, token_buf: list[str],
                         task_id: str = "", mode: str = "",

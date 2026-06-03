@@ -242,9 +242,9 @@ def execute_task(
             approval_text   = format_plan_approval_request(task, plan_attempt, feedback, plan_dur=plan_dur_str)
             approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
             if approval_msg_id:
-                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
+                dc.add_reaction(approvals_channel_id, approval_msg_id, cfg.EMOJI_APPROVE)
                 time.sleep(0.75)
-                dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)
+                dc.add_reaction(approvals_channel_id, approval_msg_id, cfg.EMOJI_REJECT)
                 state["plan_approval_message_id"] = approval_msg_id
                 save_state(state)
                 log(f"[{tid}] Plan approval request posted to #forge-approvals (msg {approval_msg_id})")
@@ -399,9 +399,9 @@ def execute_task(
         approval_text   = format_push_approval_request(task, commit_info, act_dur=act_dur_str)
         approval_msg_id = dc.send_message(approvals_channel_id, approval_text)
         if approval_msg_id:
-            dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_APPROVE)
+            dc.add_reaction(approvals_channel_id, approval_msg_id, cfg.EMOJI_APPROVE)
             time.sleep(0.75)
-            dc.add_reaction(approvals_channel_id, approval_msg_id, EMOJI_REJECT)
+            dc.add_reaction(approvals_channel_id, approval_msg_id, cfg.EMOJI_REJECT)
             state["push_approval_message_id"] = approval_msg_id
             save_state(state)
             log(f"[{tid}] Push approval request posted to #forge-approvals (msg {approval_msg_id})")
