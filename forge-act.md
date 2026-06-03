@@ -197,6 +197,34 @@ Every section is MANDATORY:
 - Flaky tests (pass on retry): document in Test Results, ensure final run shows 0 failures
 - MCP server unavailable: document in Blockers, fall back to lockfile versions
 
+## Writing the Implementation Report
+
+**Always use a bash heredoc with a single-quoted delimiter.** Never use the `write` tool
+for the report file — it corrupts technical identifiers (`bf16`, `fp16`, hex values,
+CamelCase names) in long strings. The single-quoted heredoc is immune:
+
+```bash
+cat << 'ENDREPORT' > .forge/reports/<TASK_ID>_implement.md
+# Implementation Report: <TASK_ID>
+...complete content...
+ENDREPORT
+```
+
+Write the complete document in one heredoc call after all tests pass. If you verify
+corruption after writing, one corrective overwrite is permitted (see FORGE_AGENT_RULES §8).
+
+## Pre-Stop Verification
+
+Run exactly these three commands — no Python scripts:
+
+```bash
+head -1 .forge/reports/<TASK_ID>_implement.md       # must print: # Implementation Report: <TASK_ID>
+grep "^## " .forge/reports/<TASK_ID>_implement.md    # must show all mandatory section headings
+wc -l .forge/reports/<TASK_ID>_implement.md          # must be > 30 lines
+```
+
 ## Output Discipline (35B A3B)
 
-Never abbreviate or drop report sections. Both `## Files Changed` and `## Commit Log` are always required — they serve different purposes. `## Test Results` must contain verbatim output, not a prose summary. Write the report file exactly once in a single write operation after all tests pass.
+Never abbreviate or drop report sections. Both `## Files Changed` and `## Commit Log` are
+always required — they serve different purposes. `## Test Results` must contain verbatim
+output, not a prose summary.

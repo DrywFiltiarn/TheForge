@@ -121,14 +121,42 @@ Every section below is MANDATORY. Sections MUST appear in exactly the order show
 - [ ] <verifiable, command-based item>
 ```
 
+## Writing the Plan Report
+
+**Always use a bash heredoc with a single-quoted delimiter.** Never use the `write` tool
+for the report file — it corrupts technical identifiers (`bf16`, `fp16`, hex values,
+CamelCase names) in long strings. The single-quoted heredoc is immune to all substitution:
+
+```bash
+cat << 'ENDPLAN' > .forge/reports/<TASK_ID>_plan.md
+# Plan Report: <TASK_ID>
+...complete content...
+ENDPLAN
+```
+
+Write the complete document in one heredoc call. If you verify corruption after writing,
+one corrective overwrite is permitted (see FORGE_AGENT_RULES §8).
+
+## Pre-Stop Verification
+
+Run exactly these three commands — no Python scripts, no complex verification:
+
+```bash
+head -1 .forge/reports/<TASK_ID>_plan.md        # must print: # Plan Report: <TASK_ID>
+grep "^## " .forge/reports/<TASK_ID>_plan.md     # must show all 8 section headings
+wc -l .forge/reports/<TASK_ID>_plan.md           # must be > 30 lines
+```
+
+If any check fails, write a corrective overwrite. Do not proceed to CURRENT_TASK.md update
+until all three pass.
+
 ## Pre-Stop Checklist
 
 Before updating CURRENT_TASK.md and stopping, verify:
-- [ ] File's first line is exactly `# Plan Report: <TASK_ID>`
-- [ ] Header table present with all seven fields
-- [ ] All eight mandatory sections present in order
+- [ ] `head -1` prints exactly `# Plan Report: <TASK_ID>`
+- [ ] `grep "^## "` shows all eight mandatory section headings in order
+- [ ] `wc -l` shows > 30 lines
 - [ ] No reasoning traces or internal notes in the file
-- [ ] Report written in a single write operation (not incrementally)
 
 ## Termination
 
