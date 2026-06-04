@@ -5,6 +5,7 @@ forge_runner.py — execute_task(): the full plan→approve→act→commit→pus
 
 import time
 import traceback
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -460,6 +461,32 @@ def execute_task(
     state["plan_report_message_id"] = None
     state["impl_report_message_id"] = None
     save_state(state)
+
+    # ── Archive opencode.log before purging ───────────────────────────────────
+    # Backup completed-cycle log to logs/traces/<tid>_opencode.log and append
+    # the final context.log state so post-completion debug sessions have full
+    # context detail available in a single file.
+    try:
+        cfg.LOGS_TRACES_DIR.mkdir(parents=True, exist_ok=True)
+        trace_dest = cfg.LOGS_TRACES_DIR / f"{tid}_opencode.log"
+        shutil.copy2(cfg.OPENCODE_LOG_FILE, trace_dest)
+        ctx_text = ""
+        try:
+            ctx_text = cfg.CONTEXT_LOG_FILE.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            pass
+        with trace_dest.open("a", encoding="utf-8") as tf:
+            sep = "═" * 54
+            tf.write(
+                f"\n\n{sep}\n"
+                f"  FINAL CONTEXT STATE  task={tid}\n"
+                f"{sep}\n\n"
+                f"{ctx_text}"
+                f"\n{sep}\n"
+            )
+        log(f"[{tid}] opencode.log archived → logs/traces/{trace_dest.name}")
+    except Exception as e:
+        log_warn(f"[{tid}] Could not archive opencode.log: {e}")
 
     for log_file in (cfg.OPENCODE_LOG_FILE, cfg.CONTEXT_LOG_FILE):
         try:

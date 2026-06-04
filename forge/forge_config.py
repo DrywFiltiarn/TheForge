@@ -30,6 +30,7 @@ OPENCODE_LOG_FILE       = LOGS_DIR  / "opencode.log"
 CONTEXT_LOG_FILE        = LOGS_DIR  / "context.log"
 OPENCODE_SKIPPED_LOG_FILE = LOGS_DIR / "opencode-skipped.log"
 COMPACTION_LOG_FILE     = LOGS_DIR  / "compaction.log"
+LOGS_TRACES_DIR         = LOGS_DIR  / "traces"
 
 # Resolved in main() after --repo is validated.
 # Points to <repo>/.forge/state.json — scoped to the active repository.
