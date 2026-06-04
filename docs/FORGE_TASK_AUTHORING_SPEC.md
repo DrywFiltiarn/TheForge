@@ -553,6 +553,36 @@ Tasks in phase N+1 should not prereq tasks in phase N unless they genuinely need
 
 ---
 
+### Retrofit leaf tasks spawned from blocker deviations
+
+When a task is blocked by a semver-incompatible dependency upgrade (or any
+blocker that requires a follow-on fix in a file outside the blocked task's
+original scope), a retrofit leaf task must be manually authored. That task's
+`context` field MUST open with an explicit origin reference identifying the
+task that generated the blocker and describing what was pinned and why:
+
+```
+"<PRIOR_TASK_ID> pinned <crate_name> at <old_version> due to semver
+incompatibility with <affected_file_or_type>. Migrate to <new_version>: ..."
+```
+
+**Example:**
+
+```json
+{
+  "id": "P7-D1",
+  "context": "P7-C1 pinned tower at 0.4 due to breaking API changes in
+    tower 0.5 affecting anvilml-server/src/lib.rs ServiceExt usage.
+    Migrate tower to current stable: update ServiceExt call sites in
+    crates/anvilml-server/src/lib.rs and any integration tests that use
+    tower::ServiceExt::oneshot. cargo test --workspace --features
+    mock-hardware exits 0.",
+  ...
+}
+```
+
+---
+
 ## 13. Tag Reference
 
 Tags are hints, not commands. They do not change The Forge's execution logic. They serve as searchable metadata and may inform future model-selection logic.

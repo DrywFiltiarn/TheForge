@@ -96,24 +96,20 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 
 ## 6. Dependency Version Resolution
 
-MCP tools are available for version and API lookups. Which tools apply depends on the
-project's language stack — check `docs/ENVIRONMENT.md` for the authoritative list.
-
-Common tools:
+Two MCP tools are available and MUST be used before writing any version number, feature flag,
+or API call — in both PLAN and ACT sessions.
 
 | Tool | Use for |
 |------|---------|
 | `rust-docs` | Rust crates — current stable version, feature flags, API shape |
 | `pypi-query` | Python packages — current release, correct PyPI package name |
 
-Additional tools may be configured for other stacks (npm packages, Go modules, etc.).
-The available MCP tools are listed in `~/.config/opencode/opencode.json`.
-
 **Rules:**
 - 6.1 In PLAN sessions: verify every dependency named in the task context before writing the plan.
-- 6.2 In ACT sessions: use to resolve compiler or runtime errors from API mismatches. Record the lookup and result in `## Resolved Dependencies` in the report.
-- 6.3 Do NOT use lookup results to introduce any dependency not already present in the project's dependency manifests (e.g. `Cargo.toml`, `package.json`, `requirements*.txt`, `pyproject.toml`). If a looked-up API reveals an impossible dependency combination, document under `## Dependency Notes`, set `Status=BLOCKED`, and STOP.
-- 6.4 If an MCP server is unavailable, fall back to the most recent version visible in the project's lockfile (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `requirements*.txt`) and document the fallback in `## Blockers`.
+- 6.2 In ACT sessions: query before writing or accepting any dependency version — including versions already written in the approved plan. **ACT is authoritative over PLAN on version numbers.** If the MCP lookup returns a version that differs from what the plan specified, use the MCP result, not the plan's version. Record every lookup, the plan's version, and the resolved version in `## Resolved Dependencies`. If the resolved version is semver-incompatible with existing code, document the incompatibility under `## Blockers` and stop.
+- 6.3 Do NOT use lookup results to introduce any dependency not already present in `Cargo.toml` or `requirements/*.txt`. If a looked-up API reveals an impossible dependency combination, document under `## Dependency Notes`, set `Status=BLOCKED`, and STOP.
+- 6.4 If an MCP server is unavailable, fall back to the most recent version in the workspace lockfile (`Cargo.lock` or `requirements*.txt`) and document the fallback in `## Blockers`.
+- 6.5 All external dependencies MUST be declared in `[workspace.dependencies]` in the root `Cargo.toml` and referenced via `{ workspace = true }` in per-crate `Cargo.toml` files. Adding an inline version string directly to a per-crate `Cargo.toml` is a drift violation. If `[workspace.dependencies]` does not yet contain the needed entry, add it there first, then reference it. (Applies once P7-C1 is complete — before that task runs, the workspace table does not exist and this rule is not yet enforceable.)
 
 ---
 
@@ -182,7 +178,7 @@ Do not write Python verification scripts. These three commands are sufficient.
 |------|-------------|
 | 9.1 | If an unrecoverable error is encountered: (a) write a `## Blockers` section to the in-progress report; (b) update `.forge/state/CURRENT_TASK.md` with `Status=BLOCKED`; (c) STOP immediately. Do not guess, retry indefinitely, or continue with an unsanctioned workaround. |
 | 9.2 | Build failures within the task's scope (caused by code written in this session) MUST be fixed before writing the report. They are not blockers; they are part of the test-fix loop. |
-| 9.3 | **Pre-existing warnings** (present before this task's changes, surfaced by `cargo clippy` or the compiler) MUST be fixed via the most minimal correct solution, even if the affected file is outside the task's originally listed scope. Never document a warning and skip it — a skipped warning persists indefinitely and will never be resolved by coincidence. Fix it, list the file and the change under `## Deviations from Plan`, and continue. |
+| 9.3 | **Pre-existing warnings** (present before this task's changes, surfaced by `cargo clippy` or the compiler) MUST be fixed via the most minimal correct solution, even if the affected file is outside the task's originally listed scope. Never document a warning and skip it — a skipped warning persists indefinitely. Fix it, list the file and the change under `## Deviations from Plan`, and continue. |
 | 9.4 | **Pre-existing errors** in files this task does not otherwise touch are blockers: document under `## Blockers` and STOP. If the error is in a file this task already modifies, fix it as part of the normal test-fix loop (rule 9.2) and note it under `## Deviations from Plan`. |
 | 9.5 | **Test failures that pass on retry** must be diagnosed before proceeding — never documented and accepted as flakiness without investigation. (a) **Parallelism-induced failures** (database locked, port conflict, shared temp file, migration collision, shared global state) are deterministic isolation defects, not flakiness. Fix the test isolation so each test owns its own independent state (unique `tempfile::TempDir`, unique port, unique in-memory fixture). `#[serial]` or `--test-threads=1` is only permitted when the shared resource is physically singular and cannot be instantiated per-test (e.g. a hardware device); if used, justify it in `## Deviations from Plan`. (b) **True flakiness** (timing, network, external service) must be documented in `## Test Results` with the root cause identified; the final recorded run must show 0 failures. |
 
