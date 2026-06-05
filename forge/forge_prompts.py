@@ -6,77 +6,82 @@ test, and gate commands are defined in each project's docs/ENVIRONMENT.md.
 The prompts enforce sequence and exit-code contracts only.
 """
 
+import re
 from pathlib import Path
 from typing import Optional
 
 from . import forge_config as cfg
+from .forge_log import log, log_warn
+from .forge_repos import repo_reports_dir
 
 
-# ─── Path helpers ─────────────────────────────────────────────────────────────
+# ─── Report file paths ────────────────────────────────────────────────────────
 
-def plan_report_path(project: str, task_id: str) -> Path:
-    """Return the expected path for a plan report inside the project repo."""
-    from .forge_repos import resolve_project_path
-    return resolve_project_path(project) / ".forge" / "reports" / f"{task_id}_plan.md"
+def plan_report_path(task: dict) -> Path:
+    return repo_reports_dir(task["project"]) / f"{task['id']}_plan.md"
 
 
-def implement_report_path(project: str, task_id: str) -> Path:
-    """Return the expected path for an implementation report inside the project repo."""
-    from .forge_repos import resolve_project_path
-    return resolve_project_path(project) / ".forge" / "reports" / f"{task_id}_implement.md"
+def implement_report_path(task: dict) -> Path:
+    return repo_reports_dir(task["project"]) / f"{task['id']}_implement.md"
 
 
-def write_forge_plan_report(project: str, task_id: str, content: str) -> None:
-    path = plan_report_path(project, task_id)
+# ─── Report file I/O ──────────────────────────────────────────────────────────
+
+def write_forge_plan_report(task: dict, plan_text: str, attempt: int) -> Path:
+    """
+    Write the plan report to disk (used as a fallback when OpenCode did not
+    write it directly). Never overwrites an existing report.
+    """
+    path = plan_report_path(task)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+
+    if path.exists():
+        log(f"[{task['id']}] Plan report already exists (written by OpenCode) — not overwriting")
+        return path
+
+    path.write_text(plan_text, encoding="utf-8")
+    log(f"[{task['id']}] Wrote plan report → {path}")
+    return path
 
 
-def read_plan_report(project: str, task_id: str) -> Optional[str]:
-    path = plan_report_path(project, task_id)
-    return path.read_text(encoding="utf-8") if path.exists() else None
+def read_plan_report(task: dict) -> str:
+    path = plan_report_path(task)
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def read_implement_report(project: str, task_id: str) -> Optional[str]:
-    path = implement_report_path(project, task_id)
-    return path.read_text(encoding="utf-8") if path.exists() else None
+def read_implement_report(task: dict) -> str:
+    path = implement_report_path(task)
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def extract_plan_section(plan_text: str, section: str) -> str:
+def extract_plan_section(report_text: str, task_id: str) -> str:
     """
-    Extract a named ## section from a plan report.
-    Returns the section body (excluding the heading line) or empty string if absent.
+    Extract the Approach section from a plan report.
+    Falls back to the full text if the section is not found.
     """
-    lines = plan_text.splitlines()
-    in_section = False
-    body: list[str] = []
-    heading = f"## {section}"
-    for line in lines:
-        if line.strip() == heading:
-            in_section = True
-            continue
-        if in_section:
-            if line.startswith("## "):
-                break
-            body.append(line)
-    return "\n".join(body).strip()
+    match = re.search(
+        r"^## Approach\n(.*?)(?=^##|\Z)",
+        report_text, re.DOTALL | re.MULTILINE
+    )
+    if match:
+        return match.group(1).strip()
+    return report_text
 
 
-def _is_thinking_trace(text: str) -> bool:
+def _is_thinking_trace(report_text: str) -> bool:
     """
-    Return True if the text looks like an OpenCode thinking trace rather than
-    a real plan or implementation report.
+    Return True if the plan report looks like a raw thinking trace rather
+    than a structured plan report.
     """
-    lower = text.lower()
-    indicators = [
-        "let me think",
-        "i need to",
-        "i'll start by",
-        "first, i",
-        "okay, so",
-        "alright,",
-    ]
-    return any(lower.startswith(ind) for ind in indicators)
+    stripped = report_text.strip()
+    if stripped.startswith("# Plan Report:"):
+        return False
+    thinking_markers = ["<think>", "</think>", "<|thinking|>", "<|/thinking|>"]
+    if any(m in stripped for m in thinking_markers):
+        return True
+    if len(stripped) > 8000 and report_text.count("\n## ") < 3:
+        return True
+    return False
 
 
 # ─── Prompt builders ──────────────────────────────────────────────────────────
