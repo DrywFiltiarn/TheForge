@@ -89,27 +89,49 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 5.4 | **Test file naming:** Follow the conventions established in `docs/ENVIRONMENT.md` for the project's language stack. When no convention is documented: place unit tests adjacent to the code under test; place integration tests in a `tests/` directory. |
 | 5.5 | When CI workflow files are modified: preserve all existing jobs, add new job/step only if the plan specifies it, do not disable or skip any existing test job. |
 | 5.6 | If tests fail after implementation, fix the failures before writing the report. Test-fix is part of the ACT session. Do NOT write the implementation report with known failures. |
-| 5.7 | **PLATFORM CROSS-CHECK** — if `docs/ENVIRONMENT.md` specifies a secondary target platform (e.g. Windows, a specific CPU architecture, a browser runtime), run the documented cross-check command before writing the report. Record the result in `## Test Results` alongside the primary platform output. A passing primary-platform build is NOT sufficient evidence of correctness if a cross-check is required. |
-| 5.8 | **PROJECT-SPECIFIC GATES** — `docs/ENVIRONMENT.md` may define mandatory post-test gates (e.g. config surface sync tests, schema drift checks, bundle size checks). Run every gate listed there before staging. A task may NOT be marked COMPLETE while any documented gate fails. |
+| 5.7 | **PLATFORM CROSS-CHECK** — if `docs/ENVIRONMENT.md` specifies one or more secondary target platforms or runtimes (e.g. Windows cross-compilation, a browser bundle check, an alternate CPU architecture), run every cross-check command listed there before writing the report. Record verbatim output in `## Platform Cross-Check`. A passing primary-platform build is NOT sufficient evidence of correctness if cross-checks are required. |
+| 5.8 | **PROJECT-SPECIFIC GATES** — `docs/ENVIRONMENT.md` may define mandatory post-test gates (e.g. config surface sync tests, schema drift checks, bundle size checks, type coverage thresholds). Run every gate listed there before staging. A task may NOT be marked COMPLETE while any documented gate fails. |
+| 5.9 | **FORMAT FINAL GATE** — Immediately before `git add -A`, run the project's formatter in check-only mode as documented in `docs/ENVIRONMENT.md`. Exit 0 is required. If non-zero: run the formatter in-place, then immediately re-run the project's build or compile-check command to verify compilation still passes. If compilation fails after reformatting, set Status=BLOCKED and STOP — do not stage. A task that reaches `git add -A` with a non-zero format check is a pipeline defect. |
 
 ---
 
 ## 6. Dependency Version Resolution
 
-Two MCP tools are available and MUST be used before writing any version number, feature flag,
-or API call — in both PLAN and ACT sessions.
+MCP tools for dependency version resolution are available and MUST be used before writing
+any version number, feature flag, or API call — in both PLAN and ACT sessions.
+The available tools depend on what is configured in `~/.config/opencode/opencode.json`.
+Common mappings:
 
-| Tool | Use for |
-|------|---------|
-| `rust-docs` | Rust crates — current stable version, feature flags, API shape |
-| `pypi-query` | Python packages — current release, correct PyPI package name |
+| Stack          | MCP tool       | Covers                                         |
+|----------------|----------------|------------------------------------------------|
+| Rust           | `rust-docs`    | crates.io versions, feature flags, API shape   |
+| Python         | `pypi-query`   | PyPI releases, correct package names           |
+| Node/TypeScript| check opencode.json — an npm MCP may be configured | npm package versions |
+
+Use the tool appropriate for the project's language stack. If no MCP tool covers a required
+dependency type, document the gap in `## Blockers` and fall back to the lockfile version.
 
 **Rules:**
-- 6.1 In PLAN sessions: verify every dependency named in the task context before writing the plan.
-- 6.2 In ACT sessions: query before writing or accepting any dependency version — including versions already written in the approved plan. **ACT is authoritative over PLAN on version numbers.** If the MCP lookup returns a version that differs from what the plan specified, use the MCP result, not the plan's version. Record every lookup, the plan's version, and the resolved version in `## Resolved Dependencies`. If the resolved version is semver-incompatible with existing code, document the incompatibility under `## Blockers` and stop.
-- 6.3 Do NOT use lookup results to introduce any dependency not already present in `Cargo.toml` or `requirements/*.txt`. If a looked-up API reveals an impossible dependency combination, document under `## Dependency Notes`, set `Status=BLOCKED`, and STOP.
-- 6.4 If an MCP server is unavailable, fall back to the most recent version in the workspace lockfile (`Cargo.lock` or `requirements*.txt`) and document the fallback in `## Blockers`.
-- 6.5 All external dependencies MUST be declared in `[workspace.dependencies]` in the root `Cargo.toml` and referenced via `{ workspace = true }` in per-crate `Cargo.toml` files. Adding an inline version string directly to a per-crate `Cargo.toml` is a drift violation. If `[workspace.dependencies]` does not yet contain the needed entry, add it there first, then reference it. (Applies once P7-C1 is complete — before that task runs, the workspace table does not exist and this rule is not yet enforceable.)
+- 6.1 In PLAN sessions: verify every dependency named in the task context before writing
+  the plan.
+- 6.2 In ACT sessions: query before writing or accepting any dependency version —
+  including versions already written in the approved plan. **ACT is authoritative over
+  PLAN on version numbers.** If the MCP lookup returns a version that differs from what
+  the plan specified, use the MCP result, not the plan's version. Record every lookup,
+  the plan's version, and the resolved version in `## Resolved Dependencies`. If the
+  resolved version is semver-incompatible with existing code, document the incompatibility
+  under `## Blockers` and stop.
+- 6.3 Do NOT use lookup results to introduce any dependency not already declared in the
+  project's dependency manifests (`Cargo.toml`, `package.json`, `requirements*.txt`,
+  `pyproject.toml`, etc.). If a looked-up API reveals an impossible dependency
+  combination, document under `## Dependency Notes`, set `Status=BLOCKED`, and STOP.
+- 6.4 If an MCP server is unavailable, fall back to the most recent version in the
+  project's lockfile (`Cargo.lock`, `package-lock.json`, `yarn.lock`,
+  `requirements*.txt`, etc.) and document the fallback in `## Blockers`.
+- 6.5 Follow the dependency declaration convention already established in the project's
+  existing manifests. Do not introduce inline version strings where the project uses a
+  workspace or monorepo root manifest. If the correct convention is unclear, read the
+  existing manifests before adding any dependency.
 
 ---
 
@@ -198,7 +220,117 @@ Do not write Python verification scripts. These three commands are sufficient.
 
 ---
 
-## 11. Prohibited Behaviours
+## 11. Logging Standards
+
+Every task that adds or modifies code **must** include appropriate logging. Logging is
+not optional and is not deferred to a later task. The agent must apply these rules when
+writing new code and must fix missing or incorrect logging in any file it already modifies
+for another reason — even if the logging gap was pre-existing and not introduced by this task.
+
+### 11.1 General instrumentation obligation
+
+Every function or code path **added or modified** by a task must be assessed for
+observability before the task is marked COMPLETE. For each non-trivial code path, ask:
+
+1. **Would an operator need to know this ran?** If yes → INFO (lifecycle event) or
+   DEBUG (routine operation).
+2. **Would an operator need to know what it decided?** If a branch is taken, a value
+   is selected, or a fallback is used → DEBUG with the relevant fields.
+3. **Would an operator need to know why it failed or was skipped?** If work is
+   discarded, retried, or falls back silently → at minimum WARN with context.
+
+Code that silently succeeds or silently discards work without any log call is a defect
+unless the function is a pure data transformation with no side effects and no decision
+points (e.g. a type conversion or a sort). The lists in §11.3 and §11.5 are minimum
+guaranteed points for known subsystems — not an exhaustive inventory. New code paths
+not covered by those lists are subject to this obligation independently.
+
+When in doubt: instrument at DEBUG. A DEBUG call costs nothing at the default INFO
+level and is invaluable during diagnosis.
+
+### 11.2 Level assignment
+
+| Level   | Use for |
+|---------|---------|
+| `ERROR` | Unrecoverable failures that cause an operation or subsystem to abort. Always include `error=` field. |
+| `WARN`  | Recoverable anomalies — execution continues but something unexpected occurred. See §11.4 for field discipline. |
+| `INFO`  | Operational lifecycle events unconditionally visible at the default log level. See §11.3 for mandatory points. |
+| `DEBUG` | Detailed internal state useful for diagnosis but too noisy for production. See §11.5 for mandatory points. |
+| `TRACE` | Per-iteration or per-byte detail. Use sparingly; only for hot paths where DEBUG is still too noisy. |
+
+INFO is the default level in production. DEBUG and TRACE are off by default and require
+an explicit filter override. Do not demote mandatory INFO events to DEBUG to reduce
+noise — fix the message instead.
+
+### 11.3 Mandatory INFO log points
+
+The following classes of event MUST always be logged at INFO. If a task touches the
+relevant subsystem and the log call is absent, add it:
+
+- **Database initialisation** — file created for the first time, each migration applied,
+  all-migrations-up-to-date (no-op), each seed file applied or skipped
+- **Server lifecycle** — bind address on successful listen, graceful shutdown initiated
+- **Worker lifecycle** — worker spawned, worker reached Ready state, worker respawned
+  after unexpected exit (include exit code or signal)
+- **Hardware detection** — each device detected on startup (name, index, type, VRAM)
+- **Model registry** — scan completed (include count)
+- **Provisioning** — provisioning started (include reason), provisioning completed
+  (include duration)
+
+The project's `docs/ENVIRONMENT.md §9` lists the exact required fields for each
+mandatory log point. Use those field names — do not invent alternatives.
+
+### 11.4 WARN field discipline
+
+Include the `error=` field in a WARN message **only when it adds information beyond
+what the other structured fields already convey**.
+
+- A "file not found" OS error on a `path=` field that already names the missing file
+  is **redundant** — omit `error=`. Write the message to indicate the condition
+  (e.g. `"scanner: skipping missing path"`).
+- An unexpected OS error (permission denied, I/O error, network timeout) on a named
+  path or resource is **not redundant** — include `error=`.
+- When in doubt: if reading the log line without `error=` still tells the operator
+  exactly what went wrong and what was affected, omit it.
+
+### 11.5 Mandatory DEBUG log points
+
+The following classes of event MUST exist at DEBUG level. If a task touches the
+relevant subsystem and the log call is absent, add it:
+
+- **IPC** — each message sent to a worker (`worker_id=`, `message_type=`); each event
+  received from a worker (`worker_id=`, `event_type=`)
+- **Job scheduler** — job dispatched (`job_id=`, `worker_id=`); job state transition
+  (`job_id=`, `from=`, `to=`)
+- **Model scanner** — each file examined, whether accepted or skipped (`path=`;
+  `reason=` if skipped)
+- **Hardware detection** — fallback path used when primary enumeration is unavailable
+  (`fallback=` naming the method used)
+
+### 11.6 Instrumentation
+
+- Apply `#[tracing::instrument]` (Rust) or equivalent to async functions that represent
+  a meaningful unit of work: migration runner, seed loader, worker spawn, job dispatch,
+  model scan.
+- Span names must be lowercase `snake_case` matching the function or subsystem name.
+- Do not instrument tight inner loops or per-packet/per-frame functions.
+- Span fields must use structured notation so that log aggregators can index them:
+  `tracing::info!(addr = %addr, "listening")` not `tracing::info!("listening on {addr}")`.
+
+### 11.7 Plan and report obligations
+
+**PLAN sessions:** if a task adds, modifies, or touches a subsystem listed in §11.3 or
+§11.5, the plan's Approach section must explicitly list the log calls to be added or
+verified. Do not leave logging as an implicit side effect.
+
+**ACT sessions:** after implementing, scan every file changed by this task for missing
+mandatory log points (§11.3 and §11.5) and apply §11.1 to all new code paths. Add any
+that are absent. Record them in `## Files Changed`. Do not mark a task COMPLETE if a
+mandatory INFO log point is absent in a subsystem the task touches.
+
+---
+
+## 12. Prohibited Behaviours
 
 The following are unconditional prohibitions regardless of task context:
 
@@ -213,7 +345,7 @@ The following are unconditional prohibitions regardless of task context:
 
 ---
 
-## 12. Phase Numbering Reference
+## 13. Phase Numbering Reference
 
 Phase numbers are zero-padded to three digits in filenames (`001`, `002` …) and displayed
 as plain integers in task IDs (`P1-A3`, not `P001-A3`). The canonical mapping is in
