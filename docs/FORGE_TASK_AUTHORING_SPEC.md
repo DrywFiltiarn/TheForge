@@ -43,7 +43,7 @@ This document specifies the exact format, field semantics, validation rules, and
 
 **Task** — the smallest unit of work The Forge can execute. One OpenCode PLAN session followed by one OpenCode ACT session. Must be completable within a single 120-minute OpenCode session.
 
-**Phase** — a named group of tasks that together achieve a major milestone (e.g. "AnvilML Core Types"). Phases are numbered 001–999. Phase numbers are sequential but not necessarily contiguous. A phase has one `tasks_phase<NNN>.json` per project and one `TASKS_PHASE<NNN>.md` per project.
+**Phase** — a named group of tasks that together achieve a major milestone (e.g. "AnvilML Core Types"). Phases are numbered 001–899 for primary development phases. Phase numbers are sequential but not necessarily contiguous within the 001–899 range. Phases 900–999 are reserved for retrofit, correction, and adjustment phases (see §6). A phase has one `tasks_phase<NNN>.json` per project and one `TASKS_PHASE<NNN>.md` per project.
 
 **Project** — one of the registered repositories (`sindristudio`, `anvilml`, `bloomeryui`). Each task targets exactly one project. Cross-project work must be split into separate tasks, one per project.
 
@@ -229,6 +229,10 @@ The Forge runs these checks at startup and aborts if any fail. An LLM generating
 
 Phases are assigned sequentially starting at 1. They represent major development milestones. Each phase builds on the previous. Phase numbers are chosen before task authoring begins and documented in `docs/PHASES.md`.
 
+**Primary phases: 001–899.** Normal development phases. Assigned sequentially; gaps are permitted.
+
+**Retrofit phases: 900–999.** Reserved exclusively for retrofit, correction, and adjustment work that must be inserted between already-executed primary phases without renumbering them. Retrofit phases are never part of the original plan — they are authored on demand when a gap in the committed codebase is identified (e.g. a rule added after earlier phases ran, a production bug requiring correction before the next phase begins). The filename satisfies the loader's `\d{3}` pattern and the task ID prefix reflects the numeric phase value (e.g. phase `900` → IDs `P900-A1`, `P900-A2`). Execution order is determined entirely by `prereqs`, not by the phase number, so a phase `900` file is picked up correctly relative to any primary phase as long as its prereqs and the prereqs of the tasks that depend on it are set correctly. When authoring a retrofit phase, identify every task in subsequent primary phases whose prereq chain must be updated to route through the new retrofit tasks, and update those prereq fields.
+
 Example mapping:
 
 | Phase | Name | Description |
@@ -238,6 +242,8 @@ Example mapping:
 | 003 | Hardware Detection | ROCm, CUDA, IPEX, mock detector |
 | 004 | Worker Management | WorkerPool, IPC bridge, env injection |
 | ... | ... | ... |
+| 900 | Logging Retrofit | Retrofit §11 logging to phases 000–008 before phase 009 begins |
+| 901–999 | (reserved) | Future retrofit phases as needed |
 
 ### Group letter assignment within a phase
 
