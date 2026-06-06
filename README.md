@@ -1,6 +1,30 @@
 # The Forge — Autonomous Development Orchestrator
 
-The Forge orchestrator drives OpenCode through a plan → approve → implement → approve → commit/push cycle, one atomic task at a time, with Discord approval gates and full resume capability after interruptions or llama.cpp failures.
+The Forge is a project-agnostic autonomous development orchestrator. It drives an OpenCode agent through a strict plan → approve → implement → approve → commit/push cycle, one atomic task at a time, with Discord approval gates and full resume capability after interruptions or model failures. It is not tied to any particular programming language or project type — the same orchestrator and agents work across Rust, Python, TypeScript, or any combination thereof. The current primary focus is Rust/Python/TypeScript projects, with support for additional stacks added as needed.
+
+---
+
+## How it works
+
+The Forge agents (`forge-plan` and `forge-act`) are universal. They contain no project-specific knowledge. All knowledge about what to build and how to build it is provided through three documents that live in the target project's `docs/` directory and are read by the agents at the start of every session:
+
+**`ENVIRONMENT.md`** is the agent's executable contract with the project's toolchain. It defines the exact commands for building, formatting, linting, testing, and any platform cross-checks or project-specific quality gates. Because every command the agent runs comes from this file, adapting The Forge to a new project or tech stack requires only updating this document — the agents and orchestrator are unchanged.
+
+**`ARCHITECTURE.md`** is a navigational map of the repository. It describes the package or crate layout, the role and boundaries of each module or component, and the design principles that govern how they interact. Agents use this to understand where new code belongs, what existing code they can depend on, and what is intentionally out of scope for any given task.
+
+**`<PROJECT>_DESIGN.md`** is the functional specification. It defines what the project does — its domain types, API contracts, IPC protocol, data model, and any other behavioural or interface requirements. This is the authoritative source an agent consults when it needs to know not just where to write code, but what that code must do and how it must behave relative to the rest of the system.
+
+These three documents cross-reference each other and together give the agents everything they need to plan and implement any task correctly without out-of-band instructions.
+
+### Forge-managed documents
+
+Two additional documents are maintained by The Forge itself and automatically deployed into each project's `docs/` directory on startup:
+
+**`FORGE_AGENT_RULES.md`** defines the operating rules that apply to all agents on all projects: task atomicity, git constraints, test and formatting requirements, version bumping, prohibited behaviours, and report formats. It is the universal behavioural contract that sits above any project-specific instruction.
+
+**`FORGE_TASK_AUTHORING_SPEC.md`** is the authoring guide for task definitions — the `tasks_phase<NNN>.json` and `TASKS_PHASE<NNN>.md` files that describe the work to be done. It is written for both human authors and LLMs generating task content, and specifies the exact format, field semantics, sizing rules, and quality standards expected by the orchestrator.
+
+Both documents are versioned inside The Forge. If a project copy is missing it is installed silently; if it is present but out of sync with the bundled version, the operator is prompted to update before the session continues.
 
 ---
 
@@ -32,42 +56,75 @@ to read before reacting.
 ## Structure
 
 ```
-forge/
-├── forge.py              # Entry point — run this
-├── forge_manage.py       # Management CLI — status, state mutations
-├── repos.json            # Repository registry
-├── forge.env             # Local environment config (gitignored)
-├── .venv/                # Python virtual environment (auto-created by forge_setup.sh)
-├── forge-plan.md         # OpenCode agent — PLAN sessions (read-only permissions)
-├── forge-act.md          # OpenCode agent — ACT sessions (implementation permissions)
-├── state.json            # Runtime state — auto-managed, never edit by hand
-└── README.md             # This file
+<forge-root>/
+├── forge.py                          # Entry point — never run directly; use forge.sh
+├── forge_manage.py                   # Management CLI — never run directly; use forge_manage.sh
+├── forge.sh                          # Orchestrator launcher (activates .venv)
+├── forge_manage.sh                   # Management CLI launcher (activates .venv)
+├── forge_monitor.sh                  # tmux monitoring view launcher
+├── forge_setup.sh                    # First-time setup: creates .venv, forge.env template
+├── repos.json                        # Repository registry
+├── forge.env                         # Local environment config (gitignored)
+├── .venv/                            # Python virtual environment (auto-created by forge_setup.sh)
+├── agents/                           # OpenCode agent markdown files (source of truth)
+│   ├── forge-plan.md                 # PLAN sessions — read-only, plan report only
+│   └── forge-act.md                  # ACT sessions — full implementation permissions
+├── docs/                             # Bundled Forge documents (synced to each repo's docs/ on startup)
+│   ├── FORGE_AGENT_RULES.md
+│   └── FORGE_TASK_AUTHORING_SPEC.md
+├── logs/                             # All runtime log output
+│   ├── forge.log
+│   ├── opencode.log
+│   ├── context.log
+│   ├── compaction.log
+│   └── traces/                       # Per-task opencode.log archives (<TASK-ID>_opencode.log)
+├── forge/                            # Implementation package (forge_config.py, forge_runner.py, …)
+└── README.md                         # This file
 
-AnvilML/docs/
-├── FORGE_AGENT_RULES.md  # Agent operating rules
-└── ...
+<repo>/                               # Target repository (e.g. AnvilML)
+├── docs/
+│   ├── FORGE_AGENT_RULES.md          # Managed by The Forge — installed/updated on startup
+│   ├── FORGE_TASK_AUTHORING_SPEC.md  # Managed by The Forge — installed/updated on startup
+│   ├── ENVIRONMENT.md                # Project-owned: toolchain, commands, gates
+│   ├── ARCHITECTURE.md               # Project-owned: module layout, component boundaries
+│   ├── <PROJECT>_DESIGN.md           # Project-owned: functional spec and API contracts
+│   └── TASKS_PHASE<NNN>.md           # Per-phase human-readable task narrative (one per phase)
+└── .forge/
+    ├── tasks/                        # Task JSON files (tasks_phase<NNN>.json) — authored per project
+    ├── reports/                      # Plan and implementation reports written by OpenCode agents
+    │   ├── <TASK-ID>_plan.md
+    │   └── <TASK-ID>_implement.md
+    └── state/
+        ├── state.json                # Runtime state — auto-managed, never edit by hand
+        └── CURRENT_TASK.md
 ```
 
-Agent files (`forge-plan.md`, `forge-act.md`) are automatically synced to
+Agent files (`forge-plan.md`, `forge-act.md`) are automatically synced from `agents/` to
 `~/.config/opencode/agents/` by `forge.py` on startup.
+
+Forge documents (`FORGE_AGENT_RULES.md`, `FORGE_TASK_AUTHORING_SPEC.md`) are automatically
+synced from `docs/` to `<repo>/docs/` by `forge.py` on startup. Out-of-sync copies prompt
+for an update.
 
 ---
 
 ## First-time setup
 
 ```bash
-bash forge/forge_setup.sh
+bash forge_setup.sh
 ```
 
 This creates a `.venv/` directory beside `forge.py`, installs all Python
 dependencies into it, and generates a `forge.env` template if one does not
-exist. Always run The Forge using the venv Python:
+exist.
+
+Always run The Forge via the provided shell scripts — never invoke `forge.py` directly:
 
 ```bash
-./forge/forge.sh --repo anvilml
+./forge.sh --repo anvilml
 ```
 
-Then fill in `forge/forge.env` and create the two Discord channels.
+Then fill in `forge.env` and create the two Discord channels.
 
 ---
 
@@ -82,25 +139,27 @@ Then fill in `forge/forge.env` and create the two Discord channels.
 5. Invite the bot to your server via the generated URL
 
 ### Create channels
-- `#forge-reports` — set permissions so everyone can read, bot can write, members cannot write
-- `#forge-approvals` — set permissions so only you (server owner) can read and react; bot can write
+- `#forge-reports` — everyone can read, bot can write, members cannot write
+- `#forge-approvals` — only you (server owner) can read and react; bot can write
 
 ### Get IDs
-Right-click server icon → Copy Server ID (requires Developer Mode in Discord Settings → Advanced).
-Right-click your avatar -> Copy User ID (requires Developer Mode in Discord Settings → Advanced).
-Right-click forge-reports channel -> Copy Channel ID (requires Developer Mode in Discord Settings → Advanced).
-Right-click forge-approvals channel -> Copy Channel ID (requires Developer Mode in Discord Settings → Advanced).
+Enable Discord Developer Mode (Settings → Advanced), then:
+- Right-click server icon → Copy Server ID
+- Right-click your avatar → Copy User ID
+- Right-click `#forge-reports` → Copy Channel ID
+- Right-click `#forge-approvals` → Copy Channel ID
 
 ### forge.env
 ```bash
-export FORGE_DISCORD_TOKEN="your-bot-token"
-export FORGE_DISCORD_GUILD_ID="your-server-id"
-export FORGE_DISCORD_REPORTS_CHANNEL="forge-reports"
-export FORGE_DISCORD_REPORTS_CHANNEL_ID="forge-reports-id"
-export FORGE_DISCORD_APPROVALS_CHANNEL="forge-approvals"
-export FORGE_DISCORD_APPROVALS_CHANNEL_ID="forge-approvals-id"
-export FORGE_DISCORD_OWNER_ID="your-user-id"
+export FORGE_DISCORD_TOKEN=""
+export FORGE_DISCORD_GUILD_ID=""
 
+export FORGE_DISCORD_REPORTS_CHANNEL="forge-reports"
+export FORGE_DISCORD_REPORTS_CHANNEL_ID=""
+export FORGE_DISCORD_APPROVALS_CHANNEL="forge-approvals"
+export FORGE_DISCORD_APPROVALS_CHANNEL_ID=""
+
+export FORGE_DISCORD_OWNER_ID=""
 ```
 
 ---
@@ -122,7 +181,7 @@ The relevant section for a local llama.cpp/llama-swap server:
       },
       "models": {
         "Qwen3.6-35B-A3B:planning": {
-          "name": "Qwen3.6-35B-A3B:coding",
+          "name": "Qwen3.6-35B-A3B:planning",
           "limit": { "context": 262144, "output": 65536 }
         },
         "Qwen3.6-35B-A3B:coding": {
@@ -159,42 +218,76 @@ Model selection is controlled via environment variables (see Configuration refer
 
 ```bash
 # ── Orchestrator ──────────────────────────────────────────────────
-./forge/forge.sh --repo anvilml                    # run from next unblocked task
-./forge/forge.sh --repo anvilml --dry-run          # show what would run
-./forge/forge.sh --repo anvilml --task P1-A3       # run one specific task
-./forge/forge.sh --repo anvilml --list             # show DAG status and exit
-./forge/forge.sh --repo anvilml --phase 4          # load phases 1–4
-./forge/forge.sh --repo anvilml --reset-task P1-A3      # reset (no git)
-./forge/forge.sh --repo anvilml --reset-task-git P1-A3  # reset + git
+./forge.sh --repo anvilml                    # run from next unblocked task
+./forge.sh --repo anvilml --dry-run          # show what would run
+./forge.sh --repo anvilml --task P1-A3       # run one specific task
+./forge.sh --repo anvilml --list             # show DAG status and exit
+./forge.sh --repo anvilml --phase 4          # load phases 1–4
+./forge.sh --repo anvilml --reset-task P1-A3      # reset task state (no git)
+./forge.sh --repo anvilml --reset-task-git P1-A3  # reset task state + git
 
 # ── Full monitoring view (tmux) ───────────────────────────────────
-./forge/forge_monitor.sh --repo anvilml
+./forge_monitor.sh --repo anvilml
 
 # ── Management ────────────────────────────────────────────────────
-./forge/forge_manage.sh --repo anvilml             # full status table
-./forge/forge_manage.sh --repo anvilml --unblock   # ready-to-run only
+./forge_manage.sh --repo anvilml             # full status table
+./forge_manage.sh --repo anvilml --unblock   # ready-to-run only
 ```
 
-**Resume after any interruption:** just re-run `./forge/forge.sh --repo <project>`.
+**Resume after any interruption:** just re-run `./forge.sh --repo <project>`.
 State is written to disk before every external action — nothing is lost.
+
+---
+
+## Monitoring a live session
+
+```bash
+tail -f logs/opencode.log    # agent tool calls, prose output, session summary
+tail -f logs/context.log     # live context window usage (updates per step)
+tail -f logs/forge.log       # orchestrator decisions, approvals, errors
+tail -f logs/compaction.log  # OpenCode auto-compaction events
+```
+
+Or use the integrated tmux view, which arranges these streams automatically:
+
+```bash
+./forge_monitor.sh --repo anvilml
+```
+
+tmux layout:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  tail -f logs/opencode.log                              │
+│  (OpenCode tool calls and output)                       │
+│                                                         │
+├───────────────────────┬─────────────────────────────────┤
+│ forge.sh (status)     │ watch -n1 cat logs/context.log  │
+│                       │ (context window usage %)        │
+└───────────────────────┴─────────────────────────────────┘
+```
+
+Per-task `opencode.log` snapshots are archived to `logs/traces/<TASK-ID>_opencode.log`
+after each completed task cycle.
 
 ---
 
 ## Task management
 
-`forge_manage.py` provides status inspection and state mutations without running
-the full orchestrator. Safe to use while `forge.py` is running.
+`forge_manage.sh` provides status inspection and state mutations without running
+the full orchestrator. Safe to use while `forge.sh` is running.
 
 ```bash
-./forge/forge_manage.sh --repo anvilml                   # full status table
-./forge/forge_manage.sh --repo anvilml --unblock          # ready-to-run only
-./forge/forge_manage.sh --repo anvilml --phase 4          # limit to phases 1–4
-./forge/forge_manage.sh --repo anvilml --complete P4-A3   # manually mark complete
-./forge/forge_manage.sh --repo anvilml --fail P4-A3       # mark as failed
-./forge/forge_manage.sh --repo anvilml --reset P4-A3      # reset to unstarted
-./forge/forge_manage.sh --repo anvilml --review P4-A3     # mark needs-review
-./forge/forge_manage.sh --repo anvilml --clear-failed     # reset all failed
-./forge/forge_manage.sh --repo anvilml --clear-review     # reset all needs-review
+./forge_manage.sh --repo anvilml                   # full status table
+./forge_manage.sh --repo anvilml --unblock          # ready-to-run only
+./forge_manage.sh --repo anvilml --phase 4          # limit view to phases 1–4
+./forge_manage.sh --repo anvilml --complete P4-A3   # manually mark complete
+./forge_manage.sh --repo anvilml --fail P4-A3       # mark as failed
+./forge_manage.sh --repo anvilml --reset P4-A3      # reset to unstarted
+./forge_manage.sh --repo anvilml --review P4-A3     # mark needs-review
+./forge_manage.sh --repo anvilml --clear-failed     # reset all failed
+./forge_manage.sh --repo anvilml --clear-review     # reset all needs-review
 ```
 
 ### When to use each command
@@ -216,22 +309,12 @@ the full orchestrator. Safe to use while `forge.py` is running.
 Every task produces two markdown reports inside the target repository:
 
 ```
-AnvilML/.forge/reports/<TASK-ID>_plan.md         # written by forge-plan agent
-AnvilML/.forge/reports/<TASK-ID>_implement.md    # written by forge-act agent
+<repo>/.forge/reports/<TASK-ID>_plan.md         # written by forge-plan agent
+<repo>/.forge/reports/<TASK-ID>_implement.md    # written by forge-act agent
 ```
 
 The Forge reads these files to populate the Discord posts. Both are committed to the
 repository as part of the post-approval commit, so the full build history is in git.
-
----
-
-## Monitoring a live session
-
-```bash
-tail -f forge/logs/opencode.log    # agent tool calls, prose output, session summary
-tail -f forge/logs/context.log     # live context window usage (updates per step)
-tail -f forge/logs/forge.log       # orchestrator decisions, approvals, errors
-```
 
 ---
 
@@ -242,57 +325,58 @@ Automatically retried up to `FORGE_OPENCODE_RETRIES` times (default: 3) with
 increasing delays. A warning is posted to `#forge-approvals` on each retry.
 If all retries fail, the task is marked `failed` and The Forge stops.
 
-### Retry a failed task with clean repos
+### Retry a failed task with clean repo
 ```bash
-# Hard-reset all touched repos to origin/develop, then retry
-./forge/forge.sh --reset-task-git P1-A3
+# Hard-reset repo to origin/<branch>, then retry
+./forge.sh --repo anvilml --reset-task-git P1-A3
 
 # Or reset state only (keep whatever the agent wrote locally, inspect first)
-./forge/forge.sh --reset-task P1-A3
-./forge/forge.sh --task P1-A3
+./forge.sh --repo anvilml --reset-task P1-A3
+./forge.sh --repo anvilml --task P1-A3
 ```
 
-`--reset-task-git` runs `git fetch origin develop && git reset --hard origin/develop`
-on each repo the task touches, plus `git clean -fd` for untracked files. This
-ensures the retry starts from a known-good codebase with no half-written code.
-
-### When to use --reset-task-git vs --reset-task
-
-| Situation | Command |
-|---|---|
-| Agent failed before writing any files | `--reset-task` is enough |
-| Agent wrote partial files, no commits | `--reset-task-git` (cleans working tree) |
-| Agent made local commits, not pushed | `--reset-task-git` (resets to origin) |
-| Agent pushed but push approval rejected | neither — task is `needs_review`; inspect manually |
-
-### Task needs review (push rejected)
-```bash
-./forge/forge_manage.sh --repo anvilml   # see what's in review
-
-# After reviewing git log and deciding it's acceptable:
-./forge/forge_manage.sh --repo anvilml --complete P1-A3
-
-# After deciding it needs a full redo:
-./forge/forge.sh --reset-task-git P1-A3
-./forge/forge.sh --task P1-A3
-```
+`--reset-task-git` runs `git fetch origin <branch> && git reset --hard origin/<branch>`
+on each repo the task touches, plus `git clean -fd` for untracked files.
 
 ---
 
 ## Configuration reference
 
-| Variable | Default | Description |
+All variables are optional; built-in defaults apply when unset.
+Set them in `forge.env` — they are sourced by the shell scripts before launch.
+
+### Discord
+
+| Variable | Purpose | Default |
 |---|---|---|
-| `FORGE_DISCORD_TOKEN` | — | Discord bot token (required) |
-| `FORGE_DISCORD_GUILD_ID` | — | Discord server ID (required) |
-| `FORGE_DISCORD_REPORTS_CHANNEL` | `forge-reports` | Broadcast channel (plan + impl reports) |
-| `FORGE_DISCORD_APPROVALS_CHANNEL` | `forge-approvals` | Approval channel (polled for reactions) |
-| `FORGE_OPENCODE_BIN` | `opencode` | Path to OpenCode binary |
-| `FORGE_OPENCODE_TIMEOUT` | `7200` | Max seconds per OpenCode session (120 min) |
-| `FORGE_OPENCODE_RETRIES` | `3` | Retry attempts on OpenCode failure |
-| `FORGE_OPENCODE_RETRY_DELAY` | `60` | Base seconds between retries (×attempt number) |
-| `FORGE_CONTEXT_WINDOW` | `262144` | Model context window size in tokens (256k) |
-| `FORGE_MODEL_PLANNING` | `llama.cpp/Qwen3.6-35B-A3B:planning` | Model for PLAN sessions |
-| `FORGE_MODEL_CODING` | `llama.cpp/Qwen3.6-35B-A3B:coding` | Model for ACT sessions |
-| `FORGE_POLL_INTERVAL` | `10` | Seconds between Discord reaction polls |
-| `FORGE_APPROVAL_TIMEOUT` | `86400` | Max seconds to wait for approval (24h) |
+| `FORGE_DISCORD_TOKEN` | Bot token | (required for Discord) |
+| `FORGE_DISCORD_GUILD_ID` | Server ID | (required for Discord) |
+| `FORGE_DISCORD_REPORTS_CHANNEL` | Reports channel name | `forge-reports` |
+| `FORGE_DISCORD_REPORTS_CHANNEL_ID` | Reports channel ID | (required for Discord) |
+| `FORGE_DISCORD_APPROVALS_CHANNEL` | Approvals channel name | `forge-approvals` |
+| `FORGE_DISCORD_APPROVALS_CHANNEL_ID` | Approvals channel ID | (required for Discord) |
+| `FORGE_DISCORD_OWNER_ID` | Your Discord user ID (approval gate) | (required for Discord) |
+
+### OpenCode
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `FORGE_OPENCODE_BIN` | Path to opencode binary | `opencode` |
+| `FORGE_OPENCODE_TIMEOUT` | Max seconds per OpenCode session | `7200` (120 min) |
+| `FORGE_OPENCODE_RETRIES` | Retry count on llama.cpp crash | `3` |
+| `FORGE_OPENCODE_RETRY_DELAY` | Base seconds between retries | `60` |
+| `FORGE_CONTEXT_WINDOW` | Model context window (tokens) | `262144` (256k) |
+
+### Models
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `FORGE_MODEL_PLANNING` | Model ID for PLAN sessions | `llama.cpp/Qwen3.6-35B-A3B:planning` |
+| `FORGE_MODEL_CODING` | Model ID for ACT sessions | `llama.cpp/Qwen3.6-35B-A3B:coding` |
+
+### Approval polling
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `FORGE_POLL_INTERVAL` | Seconds between Discord reaction polls | `10` |
+| `FORGE_APPROVAL_TIMEOUT` | Approval timeout in seconds | `86400` (24 h) |
