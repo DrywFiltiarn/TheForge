@@ -330,7 +330,80 @@ mandatory INFO log point is absent in a subsystem the task touches.
 
 ---
 
-## 12. Prohibited Behaviours
+## 12. Crate Version Bumping
+
+Every task that modifies source files inside a crate **must** increment that crate's
+patch version before staging. This rule applies to all projects regardless of language
+stack; see `docs/ENVIRONMENT.md §10` for the project-specific version file locations
+and commands.
+
+### 12.1 What triggers a bump
+
+A crate (or package) version must be bumped when **any** of the following are modified
+within it during this task:
+
+- Source files (`src/**`, `lib/**`, `worker/**`, equivalent per stack)
+- Test files (`tests/**`, `__tests__/**`, equivalent)
+- Build scripts (`build.rs`, equivalent)
+
+A bump is **not** required when only the following are modified:
+
+- `Cargo.toml` / `package.json` / `pyproject.toml` dependency entries (no source change)
+- Documentation files (`docs/**`, `*.md`, `*.txt`)
+- CI workflow files (`.github/**`)
+- The crate's own manifest version field (i.e. the bump itself)
+
+### 12.2 Which version field to bump
+
+Bump the patch digit only — the `Z` in `X.Y.Z`:
+
+- `X` (major) and `Y` (minor) are **read-only for agents**. Preserve them exactly as found.
+- `Z` (patch) increments by 1 from the value found at the start of this session.
+- The workspace release version (`[workspace.package] version` in root `Cargo.toml`,
+  or any equivalent top-level product version field) is **always read-only for agents**
+  and must never be modified.
+
+### 12.3 When to apply the bump
+
+Apply during the IMPLEMENT step, immediately after writing source changes for that crate.
+Do not defer. If multiple crates are modified in one task, bump each independently as you
+finish modifying it.
+
+### 12.4 How to apply the bump
+
+Read the current version from the crate's manifest `[package]` section, compute `Z + 1`,
+write it back. Target only the `version = "X.Y.Z"` line in `[package]` — do not touch
+version strings in dependency declarations or lock files.
+
+For Rust (`Cargo.toml`):
+```toml
+# Before
+[package]
+version = "0.1.4"
+
+# After — only Z changes, X.Y preserved exactly
+[package]
+version = "0.1.5"
+```
+
+Do not edit `Cargo.lock` manually — cargo regenerates it on the next build.
+Cross-crate path dependencies in this workspace do not carry version pins, so no cascade
+update to other crates' `Cargo.toml` files is needed.
+
+### 12.5 Plan and report obligations
+
+**PLAN sessions:** For every crate listed in `## Files Affected` whose source files are
+modified, add a row to the Files Affected table:
+
+| Modify | `crates/<name>/Cargo.toml` | Bump patch version `X.Y.Z → X.Y.(Z+1)` |
+
+**ACT sessions:** After implementing, verify the version was bumped for every modified
+crate. Record each bump in `## Files Changed`. Do not mark a task COMPLETE if a crate's
+source files were modified but its version was not bumped.
+
+---
+
+## 13. Prohibited Behaviours
 
 The following are unconditional prohibitions regardless of task context:
 
@@ -345,7 +418,7 @@ The following are unconditional prohibitions regardless of task context:
 
 ---
 
-## 13. Phase Numbering Reference
+## 14. Phase Numbering Reference
 
 Phase numbers are zero-padded to three digits in filenames (`001`, `002` …) and displayed
 as plain integers in task IDs (`P1-A3`, not `P001-A3`). The canonical mapping is in

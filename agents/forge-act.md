@@ -114,20 +114,27 @@ commands come from `docs/ENVIRONMENT.md`.
 2. **IMPLEMENT**: Write all source code, tests, and CI changes as specified in the approved
    plan. Scope is strictly limited to the plan's In Scope section.
 
-3. **FORMAT (pass 1)**: Run the project's formatter in-place (not check-only mode) as
+3. **VERSION BUMP**: For every crate or package whose source files were modified in step 2,
+   increment the patch digit (`Z` in `X.Y.Z`) of its manifest `[package] version` field by 1.
+   Read the current value first; preserve `X` and `Y` exactly. The workspace release version
+   (`[workspace.package] version` in root `Cargo.toml`, or equivalent) is read-only — never
+   modify it. See `docs/ENVIRONMENT.md §10` for the project-specific manifest locations.
+   Record each bump in the Files Affected list of the report.
+
+4. **FORMAT (pass 1)**: Run the project's formatter in-place (not check-only mode) as
    documented in `docs/ENVIRONMENT.md`. If the formatter exits non-zero, fix the cause before
    proceeding. Do not continue with unformatted code.
 
-4. **LINT**: Run all linter passes as documented in `docs/ENVIRONMENT.md`. Fix all warnings
+5. **LINT**: Run all linter passes as documented in `docs/ENVIRONMENT.md`. Fix all warnings
    and errors. Zero warnings required. List any pre-existing fixes applied (not introduced by
    this task) in `## Deviations from Plan`. Never document a warning and skip it.
 
-5. **PLATFORM CROSS-CHECK**: If `docs/ENVIRONMENT.md` specifies a secondary platform target
+6. **PLATFORM CROSS-CHECK**: If `docs/ENVIRONMENT.md` specifies a secondary platform target
    (e.g. Windows cross-compilation, browser bundle check, alternate runtime), run every
    cross-check defined there. Zero errors required. Record verbatim output in
    `## Platform Cross-Check`.
 
-6. **TEST**: Run the full test suite for every affected module/package/crate as documented in
+7. **TEST**: Run the full test suite for every affected module/package/crate as documented in
    `docs/ENVIRONMENT.md`. Fix all failures. Zero failures required before proceeding.
    If a failure passes on retry, diagnose before continuing:
    - Parallelism-induced failures (database locked, port conflict, shared temp file, migration
@@ -138,11 +145,11 @@ commands come from `docs/ENVIRONMENT.md`.
    - True flakiness (timing, network) must be documented in `## Test Results` with root cause
      identified; the final recorded run must show 0 failures.
 
-7. **PROJECT GATES**: Run every mandatory post-test gate listed in `docs/ENVIRONMENT.md`
+8. **PROJECT GATES**: Run every mandatory post-test gate listed in `docs/ENVIRONMENT.md`
    (e.g. config drift check, schema validation, bundle size check, type coverage).
    Zero failures required for each gate. Do not skip or weaken gate tests.
 
-8. **FORMAT (pass 2 — final gate)**: Run the project's formatter in check-only mode as
+9. **FORMAT (pass 2 — final gate)**: Run the project's formatter in check-only mode as
    documented in `docs/ENVIRONMENT.md`. Exit 0 is required before staging.
    If non-zero: formatting drift was introduced by edits made after pass 1 (lint fixes,
    test edits, gate fixes). Resolve by running the formatter in-place once more (pass 3),
@@ -151,14 +158,14 @@ commands come from `docs/ENVIRONMENT.md`.
    as a blocker in `## Blockers`, set Status=BLOCKED, and STOP. Do not stage unformatted
    code. Do not stage code that does not compile after formatting.
 
-9. **STAGE**: Run `git add -A` inside the project repo. Do NOT commit or push.
+10. **STAGE**: Run `git add -A` inside the project repo. Do NOT commit or push.
 
-10. **REPORT**: Write `.forge/reports/<TASK_ID>_implement.md` using the structure below.
+11. **REPORT**: Write `.forge/reports/<TASK_ID>_implement.md` using the structure below.
     Include verbatim output for format check, tests, cross-check, and all gates.
 
-11. **UPDATE STATE**: Write `.forge/state/CURRENT_TASK.md` with Step=IMPLEMENT, Status=COMPLETE.
+12. **UPDATE STATE**: Write `.forge/state/CURRENT_TASK.md` with Step=IMPLEMENT, Status=COMPLETE.
 
-12. **STOP**.
+13. **STOP**.
 
 ## Implementation Report Format
 
