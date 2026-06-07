@@ -599,6 +599,7 @@ Tags are hints, not commands. They do not change The Forge's execution logic. Th
 | `"manual"` | This task requires human intervention and cannot be completed automatically. | End-to-end smoke tests, hardware-dependent validation, anything requiring a running GPU. |
 | `"breaking"` | This task changes a public interface that other tasks or projects depend on. | Adding variants to an enum used across crates, changing API response shapes, altering the IPC protocol. |
 | `"scaffold"` | This task creates file structure and stubs with no real logic. | Cargo workspace creation, directory layout, empty component files. |
+| `"refactor"` | This task makes zero observable behaviour changes (see FORGE_AGENT_RULES §4.6). ACT agent must verify no `pub` signature changed before writing the implementation report. |
 
 Use `[]` when no tag applies. Do not combine `"manual"` with other tags — manual tasks are inherently special-cased.
 

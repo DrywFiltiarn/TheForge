@@ -201,7 +201,7 @@ def print_dag_status(tasks: list[dict], state: dict) -> None:
             status = "🔍 needs review"
         else:
             prereqs = set(task.get("prereqs", []))
-            status = "⬜ unblocked" if prereqs.issubset(completed) else "⏸  blocked"
+            status = "▶ unblocked" if prereqs.issubset(completed) else "⏸  blocked"
         proj = task.get("project", "?")
         print(f"{tid:<12} {status:<14} {proj:<12} {task['description']}")
     print()

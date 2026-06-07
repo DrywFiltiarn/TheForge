@@ -159,7 +159,7 @@ def print_status(tasks: list[dict], state: dict) -> None:
     if state.get("last_updated"):
         print(f"  Last updated: {DIM}{state['last_updated']}{RESET}")
 
-    print(f"\n{BOLD}{'ID':<12} {'Status':<20} {'Project':<14} Description{RESET}")
+    print(f"\n{BOLD}{'  ID':<14} {'Status':<21} {'Project':<14} Description{RESET}")
     print(f"{DIM}{'─' * 85}{RESET}")
 
     current_phase = None
@@ -168,8 +168,8 @@ def print_status(tasks: list[dict], state: dict) -> None:
         phase = task.get("phase", "?")
         proj  = task.get("project", "?")
         desc  = task["description"]
-        if len(desc) > 44:
-            desc = desc[:41] + "..."
+        # if len(desc) > 44:
+        #    desc = desc[:41] + "..."
 
         if phase != current_phase:
             current_phase = phase
@@ -184,7 +184,7 @@ def print_status(tasks: list[dict], state: dict) -> None:
                 label  = f"⏸  blocked ({', '.join(sorted(missing))})"
             else:
                 colour = YELLOW
-                label  = "⬜ unblocked"
+                label  = "▶  unblocked"
 
         padded_label = f"{colour}{label}{RESET}"
         # Account for ANSI escape sequences in column width calculation

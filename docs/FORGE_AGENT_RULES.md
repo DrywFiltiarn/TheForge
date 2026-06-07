@@ -76,6 +76,7 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 4.3 | Do not upgrade dependencies unless the task explicitly requires it. |
 | 4.4 | Do not modify unrelated tests. Do not delete tests. |
 | 4.5 | If a prerequisite task's output is missing or incomplete, STOP and write the blocker under `## Blockers` in the report. Do not attempt to compensate. |
+| 4.6 | **Refactor tasks** — a task tagged `refactor` makes zero observable behaviour changes: no new or removed `pub` items, no changed error message text, no changed log output except adding mandatory §11.5 log points. If a refactor task discovers it must change a public interface to proceed, write a blocker and STOP. The ACT agent MUST, before writing the implementation report, run `grep -n "^pub " <modified_files>` and confirm no public signature changed. Record the grep output in `## Deviations from Plan`. |
 
 ---
 
