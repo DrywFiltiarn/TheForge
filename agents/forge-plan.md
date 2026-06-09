@@ -70,11 +70,12 @@ Before writing any version number in a plan, verify it using the MCP tool approp
 project's language stack. The available MCP tools are listed in
 `~/.config/opencode/opencode.json`. Common mappings:
 
-| Stack          | MCP tool       | Covers                                         |
-|----------------|----------------|------------------------------------------------|
-| Rust           | `rust-docs`    | crates.io versions, feature flags, API shape   |
-| Python         | `pypi-query`   | PyPI releases, correct package names           |
-| Node/TypeScript| check opencode.json — an npm MCP may be configured | npm package versions |
+| Stack          | MCP tool       | Covers                                          |
+|----------------|----------------|-------------------------------------------------|
+| Rust           | `rust-docs`    | crates.io versions, feature flags, API shape    |
+| Python         | `pypi-query`   | PyPI releases, correct package names            |
+| Node/TypeScript| `npm-search`   | npm package versions, package name confirmation |
+
 
 If no MCP tool covers a required dependency type, note the gap in the plan's Risks section
 and use the lockfile version as the stated version.

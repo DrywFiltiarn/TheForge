@@ -81,11 +81,11 @@ version using the appropriate MCP tool.**
 Use the tool appropriate for the project's language stack. The available MCP tools are listed
 in `~/.config/opencode/opencode.json`. Common mappings:
 
-| Stack          | MCP tool       | Covers                                         |
-|----------------|----------------|------------------------------------------------|
-| Rust           | `rust-docs`    | crates.io versions, feature flags, API shape   |
-| Python         | `pypi-query`   | PyPI releases, correct package names           |
-| Node/TypeScript| check opencode.json — an npm MCP may be configured | npm package versions |
+| Stack          | MCP tool       | Covers                                          |
+|----------------|----------------|-------------------------------------------------|
+| Rust           | `rust-docs`    | crates.io versions, feature flags, API shape    |
+| Python         | `pypi-query`   | PyPI releases, correct package names            |
+| Node/TypeScript| `npm-search`   | npm package versions, package name confirmation |
 
 Query the appropriate tool for every dependency you add or update. Do not copy version numbers
 from other files in the repository without verifying they are current.
@@ -191,10 +191,10 @@ Every section is MANDATORY:
 ## Resolved Dependencies
 
 | Type   | Name      | Version resolved | Source         |
-|--------|-----------|-----------------|----------------|
-| crate  | tokio     | 1.38.0          | rust-docs MCP  |
-| npm    | zod       | 3.23.8          | npm MCP        |
-| python | diffusers | 0.29.2          | pypi-query MCP |
+|--------|-----------|------------------|----------------|
+| crate  | tokio     | 1.38.0           | rust-docs MCP  |
+| npm    | zod       | 3.23.8           | npm-search MCP |
+| python | diffusers | 0.29.2           | pypi-query MCP |
 
 (Omit rows for tasks that add no new dependencies. Do not omit the section heading.)
 

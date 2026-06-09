@@ -107,7 +107,7 @@ Common mappings:
 |----------------|----------------|------------------------------------------------|
 | Rust           | `rust-docs`    | crates.io versions, feature flags, API shape   |
 | Python         | `pypi-query`   | PyPI releases, correct package names           |
-| Node/TypeScript| check opencode.json — an npm MCP may be configured | npm package versions |
+| Node/TypeScript| `npm-search`   | npm package versions, package name confirmation |
 
 Use the tool appropriate for the project's language stack. If no MCP tool covers a required
 dependency type, document the gap in `## Blockers` and fall back to the lockfile version.

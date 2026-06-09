@@ -9,6 +9,11 @@
     "branch": "main",
     "github_url": "https://github.com/DrywFiltiarn/AnvilML.git"
   },
+  "anvilml-testui": {
+    "path": "/home/dryw/AnvilML-TestUI",
+    "branch": "main",
+    "github_url": "https://github.com/DrywFiltiarn/AnvilML-TestUI.git"
+  },
   "bloomeryui": {
     "path": "/home/dryw/BloomeryUI",
     "branch": "main",

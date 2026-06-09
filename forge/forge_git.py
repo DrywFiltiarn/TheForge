@@ -157,6 +157,7 @@ def validate_commit_messages(task: dict) -> list[str]:
         "anvilml-core", "anvilml-ipc", "anvilml-hardware", "anvilml-registry",
         "anvilml-worker", "anvilml-scheduler", "anvilml-server",
         "py-worker",
+        "anvilml-testui",
         "anvilml", "bloomeryui", "sindristudio",
     }
     CONVENTIONAL_RE = re.compile(r"^(\w+)\(([^)]+)\):\s+\S")
