@@ -3,7 +3,8 @@ forge_prompts.py — Task prompt builders and report file helpers.
 
 Prompts are intentionally project-agnostic. All build, format, lint, cross-check,
 test, and gate commands are defined in each project's docs/ENVIRONMENT.md.
-The prompts enforce sequence and exit-code contracts only.
+The prompts enforce sequence and exit-code contracts only; full behavioural
+specification lives in agents/forge-plan.md and agents/forge-act.md.
 """
 
 import re
@@ -89,15 +90,19 @@ def _is_thinking_trace(report_text: str) -> bool:
 def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
     """
     Build the prompt injected into OpenCode for the PLAN session.
-    All project-specific details (toolchain, commands, etc.) come from
-    docs/ENVIRONMENT.md which the agent reads at session start.
-    Paths must match docs/FORGE_AGENT_RULES.md §10 exactly.
+
+    This prompt is intentionally lean. Full behavioural specification —
+    codebase inspection, MCP version verification, API shape confirmation,
+    report section structure — lives in agents/forge-plan.md which OpenCode
+    loads as the active agent for this session. The prompt enforces the
+    read-order contract and the write-once constraint only.
     """
-    tid     = task["id"]
-    desc    = task["description"]
-    context = task.get("context", "")
-    phase   = task.get("phase", "1")
-    project = task["project"]
+    tid          = task["id"]
+    desc         = task["description"]
+    context      = task.get("context", "")
+    phase        = task.get("phase", "1")
+    project      = task["project"]
+    phase_padded = str(phase).zfill(3)
 
     prompt = (
         f"Task: {tid}\n"
@@ -112,28 +117,52 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
     if feedback:
         prompt += f"Revision feedback from project owner:\n{feedback}\n\n"
 
-    phase_padded = str(phase).zfill(3)
     prompt += (
         f"Instructions — PLAN SESSION ONLY:\n"
         f"1. Read .forge/state/CURRENT_TASK.md and verify Task field matches {tid}.\n"
         f"   If it does not match: write a one-line error to\n"
         f"   .forge/reports/{tid}_plan.md and STOP immediately.\n"
-        f"2. Read docs/ENVIRONMENT.md, docs/ARCHITECTURE.md, and\n"
-        f"   docs/TASKS_PHASE{phase_padded}.md.\n"
-        f"3. Write the plan report to .forge/reports/{tid}_plan.md.\n"
-        f"   Use the exact section structure from docs/FORGE_AGENT_RULES.md (plan report format).\n"
-        f"   Do not write anything to this file until the complete plan is\n"
-        f"   ready. The first and only write must start with the exact line\n"
-        f"   '# Plan Report: {tid}'. Writing narration, thinking, or reading\n"
-        f"   progress to this file is a session failure.\n"
+        f"2. Read, in order:\n"
+        f"   a. docs/FORGE_AGENT_RULES.md\n"
+        f"   b. docs/ENVIRONMENT.md\n"
+        f"   c. docs/ARCHITECTURE.md\n"
+        f"   d. docs/TASKS_PHASE{phase_padded}.md\n"
+        f"   e. docs/<PROJECT>_DESIGN.md (check docs/ for the actual filename)\n"
+        f"   Do not proceed past step 2 until all five are read.\n"
+        f"3. Inspect the existing source files relevant to this task.\n"
+        f"   Read the files listed in the task's Files Affected table, the\n"
+        f"   lib.rs or mod.rs of any crate this task touches, adjacent test\n"
+        f"   files, and the actual definitions of any types this task will\n"
+        f"   consume or produce. See agents/forge-plan.md for the full\n"
+        f"   inspection checklist.\n"
+        f"4. For every external crate or package this task introduces or\n"
+        f"   references by name: query the appropriate MCP tool to resolve\n"
+        f"   the current version AND confirm the API shape (type names,\n"
+        f"   method names, feature flags). Training-data memory is not a\n"
+        f"   valid source for any version number or external API name.\n"
+        f"   If a type named in the task context does not exist in the\n"
+        f"   resolved version, check for a renamed equivalent; if none exists,\n"
+        f"   write the plan with a BLOCKED status for that dependency.\n"
+        f"   Do not write a lower version to make a missing type resolve.\n"
+        f"5. Write the plan report to .forge/reports/{tid}_plan.md.\n"
+        f"   The report must follow the exact section structure defined in\n"
+        f"   agents/forge-plan.md (11 mandatory sections including\n"
+        f"   ## Resolved Dependencies). The first and only write must start\n"
+        f"   with the exact line '# Plan Report: {tid}'. Do not write\n"
+        f"   narration, thinking, or reading progress to this file.\n"
         f"   Write ONLY the plan report. No source code, no test files,\n"
         f"   no build commands.\n"
-        f"4. Update .forge/state/CURRENT_TASK.md:\n"
+        f"6. Verify the report:\n"
+        f"   head -1 .forge/reports/{tid}_plan.md   # must be: # Plan Report: {tid}\n"
+        f"   grep '^## ' .forge/reports/{tid}_plan.md  # must show 11 headings\n"
+        f"   wc -l .forge/reports/{tid}_plan.md        # must be > 40\n"
+        f"   If any check fails, write a corrective overwrite before continuing.\n"
+        f"7. Update .forge/state/CURRENT_TASK.md:\n"
         f"     Task: {tid}\n"
         f"     Step: PLAN\n"
         f"     Status: COMPLETE\n"
         f"     Updated: <ISO 8601 UTC timestamp>\n"
-        f"5. STOP. Do not proceed to implementation.\n"
+        f"8. STOP. Do not proceed to implementation.\n"
         f"   The Forge orchestrator handles approval and will resume in a new session.\n"
     )
     return prompt
@@ -144,9 +173,11 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
     Build the prompt injected into OpenCode for the ACT (implementation) session.
     The approved plan is injected verbatim — OpenCode must implement strictly to it.
 
-    This prompt is intentionally project-agnostic. All concrete build, format, lint,
-    cross-check, test, and gate commands are defined in docs/ENVIRONMENT.md for the
-    target project. The prompt enforces sequence and exit-code contracts only.
+    This prompt is intentionally lean. Full behavioural specification —
+    codebase inspection, version floor rule, API verification, report section
+    structure — lives in agents/forge-act.md which OpenCode loads as the active
+    agent for this session. The prompt enforces the step sequence and the
+    critical version floor rule only.
     """
     tid     = task["id"]
     desc    = task["description"]
@@ -166,62 +197,71 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"cross-check, test, and gate commands for this project are defined there.\n"
         f"The steps below define the required sequence and exit-code contracts;\n"
         f"the specific commands come from docs/ENVIRONMENT.md.\n\n"
-        f"1. IMPLEMENT: Write all source code, tests, and CI changes as specified\n"
+        f"1. RESOLVE DEPS: For every dependency this task adds or modifies,\n"
+        f"   query the appropriate MCP tool before writing any code.\n"
+        f"   VERSION FLOOR RULE: the version returned by MCP is the floor —\n"
+        f"   you may not write a lower version into any manifest for any reason\n"
+        f"   unless docs/ENVIRONMENT.md or docs/ANVILML_DESIGN.md explicitly\n"
+        f"   names an older version with a technical justification.\n"
+        f"   If an API type or method named in the approved plan does not exist\n"
+        f"   in the MCP-resolved version: check for a renamed equivalent and use\n"
+        f"   it (document in ## Deviations from Plan); if no equivalent exists,\n"
+        f"   set Status=BLOCKED, document under ## Blockers, and STOP.\n"
+        f"   Do not search older versions. Do not downgrade to make a missing\n"
+        f"   API compile.\n"
+        f"2. INSPECT: Read all files listed in the approved plan's Files Affected\n"
+        f"   table that already exist on disk, the lib.rs/mod.rs of any crate\n"
+        f"   this task touches, adjacent test files, and the actual definitions\n"
+        f"   of any types you will call or return. See agents/forge-act.md for\n"
+        f"   the full inspection checklist and the three defect categories this\n"
+        f"   prevents.\n"
+        f"3. IMPLEMENT: Write all source code, tests, and CI changes as specified\n"
         f"   in the approved plan. Scope is strictly limited to the plan's\n"
-        f"   'In Scope' section. Do not add anything not listed there.\n"
-        f"2. VERSION BUMP: For every crate or package whose source files were\n"
-        f"   modified in step 1, increment the patch digit (Z in X.Y.Z) of its\n"
-        f"   manifest [package] version by 1. Preserve X and Y exactly as found.\n"
+        f"   In Scope section. Follow the inline documentation, logging, error\n"
+        f"   handling, and test isolation standards in agents/forge-act.md.\n"
+        f"4. COMPILE CHECK: Run a fast compile check before the full test suite:\n"
+        f"   cargo check --workspace --features mock-hardware   (Rust)\n"
+        f"   python -m py_compile <new_files>                   (Python)\n"
+        f"   Fix all compile errors before proceeding.\n"
+        f"5. VERSION BUMP: For every crate or package whose source files were\n"
+        f"   modified in step 3, increment the patch digit (Z in X.Y.Z) of its\n"
+        f"   manifest [package] version by 1. Preserve X and Y exactly.\n"
         f"   The workspace release version is read-only — never modify it.\n"
-        f"   See docs/ENVIRONMENT.md §10 for manifest locations. Record each bump\n"
-        f"   in ## Files Changed in the report.\n"
-        f"3. FORMAT (pass 1): Run the project's formatter in-place (not check-only\n"
-        f"   mode) as documented in docs/ENVIRONMENT.md. If the formatter exits\n"
-        f"   non-zero, fix the cause before proceeding.\n"
-        f"4. LINT: Run all linter passes as defined in docs/ENVIRONMENT.md.\n"
-        f"   Fix ALL warnings and errors. Zero warnings permitted.\n"
-        f"   List any pre-existing fixes applied (not introduced by this task)\n"
-        f"   in ## Deviations from Plan. Never document a warning and skip it.\n"
-        f"5. PLATFORM CROSS-CHECK: Run every cross-check defined in\n"
-        f"   docs/ENVIRONMENT.md (e.g. Windows target, browser bundle, alternate\n"
-        f"   runtime). Zero errors required. Record verbatim output in\n"
-        f"   ## Platform Cross-Check in the report.\n"
-        f"6. TEST: Run the full test suite for every affected package/crate/module\n"
-        f"   as documented in docs/ENVIRONMENT.md. Fix all failures.\n"
-        f"   Zero failures required before proceeding.\n"
-        f"   If a failure passes on retry, diagnose before continuing:\n"
-        f"   (a) Parallelism-induced failures (database locked, port conflict, shared\n"
-        f"       temp file, migration collision) are isolation defects — fix them by\n"
-        f"       giving each test its own independent state (unique TempDir, unique\n"
-        f"       port, unique in-memory fixture). Do NOT use serial test execution\n"
-        f"       unless the resource is physically singular (e.g. a hardware device);\n"
-        f"       if you must, justify it in ## Deviations from Plan.\n"
-        f"   (b) True flakiness (timing, network) must be documented in ## Test\n"
-        f"       Results with root cause identified; the final recorded run must\n"
-        f"       show 0 failures.\n"
-        f"7. PROJECT GATES: Run every mandatory post-test gate defined in\n"
-        f"   docs/ENVIRONMENT.md (e.g. config drift check, schema validation,\n"
-        f"   bundle size check, type coverage). Zero failures required.\n"
-        f"   See docs/FORGE_AGENT_RULES.md §5.8 and §5.9.\n"
-        f"8. FORMAT (pass 2 — final gate): Run the project's formatter in\n"
-        f"   check-only mode as documented in docs/ENVIRONMENT.md.\n"
-        f"   Exit 0 is required. If non-zero, formatting drift was introduced\n"
-        f"   by lint or test fixes made after pass 1. Run the formatter in-place\n"
-        f"   once more (pass 3), then immediately re-run the project's build or\n"
-        f"   compile-check command to confirm the reformat did not break\n"
-        f"   compilation. If compilation breaks after reformatting: document as a\n"
-        f"   blocker in ## Blockers, set Status=BLOCKED, and STOP. Do not proceed\n"
-        f"   to staging until format check exits 0 and build exits 0.\n"
-        f"9. STAGE: Run git add -A inside the project repo ({project}).\n"
-        f"   Do NOT run git commit or git push — The Forge commits and pushes.\n"
-        f"10. REPORT: Write .forge/reports/{tid}_implement.md.\n"
-        f"   See docs/FORGE_AGENT_RULES.md (implementation report format).\n"
-        f"   Include verbatim output for format gate, tests, cross-check, and\n"
-        f"   all project gates. Write this ONLY after all steps above are complete.\n"
-        f"11. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
-        f"     Task: {tid}\n"
-        f"     Step: IMPLEMENT\n"
-        f"     Status: COMPLETE\n"
-        f"     Updated: <ISO 8601 UTC timestamp>\n"
-        f"12. STOP. The Forge will commit, seek push approval, and push.\n"
+        f"   See docs/ENVIRONMENT.md §12 for manifest locations.\n"
+        f"6. FORMAT (pass 1): Run the project's formatter in-place as documented\n"
+        f"   in docs/ENVIRONMENT.md. Fix the cause if it exits non-zero.\n"
+        f"7. LINT: Run all linter passes as defined in docs/ENVIRONMENT.md.\n"
+        f"   Zero warnings permitted. List pre-existing fixes in\n"
+        f"   ## Deviations from Plan. Never document a warning and skip it.\n"
+        f"8. PLATFORM CROSS-CHECK: Run every cross-check defined in\n"
+        f"   docs/ENVIRONMENT.md. Zero errors required. Record verbatim output\n"
+        f"   in ## Platform Cross-Check.\n"
+        f"9. TEST: Run the full test suite for every affected module as documented\n"
+        f"   in docs/ENVIRONMENT.md. Fix all failures. Zero failures required.\n"
+        f"   Diagnose any failure that passes on retry — see agents/forge-act.md\n"
+        f"   for the parallelism-induced vs true flakiness distinction.\n"
+        f"10. PUBLIC API VERIFICATION: Run:\n"
+        f"    git diff HEAD -- <modified_files> | grep '^+.*pub ' | head -40\n"
+        f"    Confirm every new pub item matches the plan's Public API Surface\n"
+        f"    table. Document additions or removals in ## Public API Delta.\n"
+        f"11. PROJECT GATES: Run every mandatory post-test gate defined in\n"
+        f"    docs/ENVIRONMENT.md. Zero failures required.\n"
+        f"12. FORMAT (pass 2 — final gate): Run the formatter in check-only mode.\n"
+        f"    Exit 0 required before staging. If non-zero: run formatter in-place\n"
+        f"    (pass 3), re-run compile check, confirm no breakage. If compilation\n"
+        f"    breaks after reformatting: set Status=BLOCKED, document under\n"
+        f"    ## Blockers, STOP.\n"
+        f"13. STAGE: Run git add -A inside the project repo ({project}).\n"
+        f"    Do NOT run git commit or git push — The Forge commits and pushes.\n"
+        f"14. REPORT: Write .forge/reports/{tid}_implement.md.\n"
+        f"    The report must follow the exact section structure defined in\n"
+        f"    agents/forge-act.md (includes ## Public API Delta). Include\n"
+        f"    verbatim output for format gate, tests, cross-check, and all gates.\n"
+        f"    Write this ONLY after all steps above are complete.\n"
+        f"15. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
+        f"      Task: {tid}\n"
+        f"      Step: IMPLEMENT\n"
+        f"      Status: COMPLETE\n"
+        f"      Updated: <ISO 8601 UTC timestamp>\n"
+        f"16. STOP. The Forge will commit, seek push approval, and push.\n"
     )
