@@ -161,10 +161,17 @@ A report that does not begin with `# Plan Report: <TASK_ID>` or
 
 **Pre-Stop Verification (use exactly these three commands):**
 ```bash
+# For plan reports:
 head -1 .forge/reports/<TASK_ID>_plan.md        # must print: # Plan Report: <TASK_ID>
-grep "^## " .forge/reports/<TASK_ID>_plan.md    # must show all section headings
-wc -l .forge/reports/<TASK_ID>_plan.md          # must be > 30 lines
+grep "^## " .forge/reports/<TASK_ID>_plan.md    # must show 11 section headings
+wc -l .forge/reports/<TASK_ID>_plan.md          # must be > 40 lines
+
+# For implementation reports:
+head -1 .forge/reports/<TASK_ID>_implement.md        # must print: # Implementation Report: <TASK_ID>
+grep "^## " .forge/reports/<TASK_ID>_implement.md    # must show 11 section headings
+wc -l .forge/reports/<TASK_ID>_implement.md          # must be > 40 lines
 ```
+The exact required sections for each report type are defined in §16 and §17 below.
 
 ---
 
@@ -402,9 +409,14 @@ Unconditional prohibitions regardless of task context or instruction:
 
 ## 16. Plan Report Format
 
+**Authoritative source:** `agents/forge-plan.md`. This section reproduces the format for
+convenient reference during a session. If any detail conflicts with `agents/forge-plan.md`,
+the agent file takes precedence.
+
 Output path: `.forge/reports/<TASK_ID>_plan.md`
 
-Every section is mandatory. Use exactly these headings:
+Every section is mandatory. Use exactly these 11 headings in this order. `grep "^## "` on
+the finished report must return exactly 11 lines.
 
 ```markdown
 # Plan Report: <TASK_ID>
@@ -421,27 +433,63 @@ Every section is mandatory. Use exactly these headings:
 
 ## Objective
 
-<One paragraph: what this task produces and why it is needed.>
+<One paragraph: what this task produces, why it is needed at this point in the build
+sequence, and the observable state of the system when the task completes — a curl command
+that now works, a test that now passes, a log line that now appears.>
 
 ## Scope
 
 ### In Scope
 
-<Explicit list of files to be created or modified, and logic to be implemented.>
+<Explicit list of files to be created or modified, and logic to be implemented.
+Name the specific functions, structs, and traits — not just the file.>
 
 ### Out of Scope
 
-<Explicit list of what this task intentionally does NOT do. If genuinely nothing,
-write "Nothing explicitly excluded — this task is fully self-contained.">
+<Explicit list of what this task intentionally does NOT do. If a stub will be completed
+by a future task, say so here.>
+
+## Existing Codebase Assessment
+
+<One to three paragraphs summarising what was found during the codebase inspection:
+(a) what already exists that this task builds on;
+(b) the established patterns (naming, error handling, test style, logging) to follow;
+(c) any gap between the design doc and current source that affects the approach.
+If no prior source exists (Phase 000/001): "No prior source exists. This task establishes
+the baseline patterns for subsequent phases.">
+
+## Resolved Dependencies
+
+<One row per external crate or package this task introduces or references by name.
+Every row must be resolved via MCP — not recalled from training data.
+If no new dependencies: write "None." Do not omit the section heading.>
+
+| Type   | Name    | Version verified | MCP source     | Feature flags confirmed |
+|--------|---------|-----------------|----------------|------------------------|
+| crate  | zeromq  | 0.6.1           | rust-docs MCP  | tokio                  |
+| python | pyzmq   | 26.2.0          | pypi-query MCP | n/a                    |
+
+If the MCP result differs from the task context or design doc, record both versions and
+add a note: "Task context specified X.Y.Z — overridden by MCP result."
 
 ## Approach
 
-<Step-by-step implementation plan. For each file to be created or modified:
-- What the file is and what it contains.
-- The specific functions, types, or logic to be written.
-- The log calls to be added (see §11.7).
-- The inline comments and doc comments to be written (see §12.4).
+<Step-by-step implementation plan. Each step must be specific enough that a programmer can
+execute it without making architectural decisions. For each step that introduces a non-obvious
+implementation choice, include one sentence of inline rationale.
+For each file to be created or modified:
+- The specific functions, types, or traits to be written, with their full signatures.
+- Any external API names must have been confirmed via MCP before appearing here.
+  Do not write type names or method names from training-data memory.
+- The log calls required (see §11.7).
+- The doc comments and decision-point inline comments required (see §12).
 - The tests to be written.>
+
+## Public API Surface
+
+<Table or code block showing every new pub item — full function signatures, struct
+definitions, trait impls, Python class/function signatures — with crate or module path.
+The ACT agent verifies this table before staging. If no new public items: "None.">
 
 ## Files Affected
 
@@ -452,28 +500,48 @@ write "Nothing explicitly excluded — this task is fully self-contained.">
 
 ## Tests
 
-| Test File | Test Name | What It Verifies |
-|-----------|-----------|-----------------|
-| <path> | <name> | <one sentence> |
+| Test File | Test Name | What It Verifies | Acceptance Command |
+|-----------|-----------|-----------------|-------------------|
+| <path> | <name> | <one sentence> | <runnable command> exits 0 |
+
+## CI Impact
+
+<State whether any CI job behaviour changes. If a new file type, gate, or test module is
+added, explain which CI job picks it up. If no CI changes: "No CI changes required.">
+
+## Platform Considerations
+
+<State any platform-specific behaviour this task introduces. Name any #[cfg(unix)] /
+#[cfg(windows)] guards required. If platform-neutral: "None identified. The Windows
+cross-check in ENVIRONMENT.md §7 is sufficient.">
 
 ## Risks and Mitigations
 
+<Minimum two rows. Risk rows must name a specific failure condition — not a general
+category. "None identified" is only acceptable for pure documentation tasks where
+codebase inspection found no gaps or inconsistencies.>
+
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| <risk> | Low/Med/High | Low/Med/High | <mitigation> |
+| <specific condition> | Low/Med/High | Low/Med/High | <specific mitigation> |
 
 ## Acceptance Criteria
 
-<Runnable shell commands. Vague criteria ("works correctly") are not permitted.>
-```
+<Runnable shell commands only. Vague criteria ("works correctly") are not permitted.>
 
----
+- [ ] <command> exits 0
+```
 
 ## 17. Implementation Report Format
 
+**Authoritative source:** `agents/forge-act.md`. This section reproduces the format for
+convenient reference during a session. If any detail conflicts with `agents/forge-act.md`,
+the agent file takes precedence.
+
 Output path: `.forge/reports/<TASK_ID>_implement.md`
 
-Every section is mandatory:
+Every section is mandatory. Use exactly these 11 headings in this order. `grep "^## "` on
+the finished report must return exactly 11 lines.
 
 ```markdown
 # Implementation Report: <TASK_ID>
@@ -488,16 +556,20 @@ Every section is mandatory:
 
 ## Summary
 
-<One paragraph summarising what was implemented.>
+<One paragraph summarising what was implemented and the final state.>
 
 ## Resolved Dependencies
+
+<One row per new dependency added or updated. Every row must reflect a live MCP lookup —
+not a version recalled from training data. If no new dependencies: write "None."
+Do not omit the section heading.>
 
 | Type   | Name    | Version resolved | Source        |
 |--------|---------|-----------------|---------------|
 | crate  | zeromq  | 0.6.1           | rust-docs MCP |
 
-(Include a row for every new dependency. Do not omit the section if there are none —
-write the table header and a single row: Type="n/a", Name="None", etc.)
+If the MCP result differs from the approved plan's version, record both and note:
+"Plan specified X.Y.Z — overridden by MCP result per version floor rule."
 
 ## Files Changed
 
@@ -514,25 +586,33 @@ write the table header and a single row: Type="n/a", Name="None", etc.)
 
 ## Format Gate
 
-<verbatim output of cargo fmt --all -- --check (pass 2), or
+<verbatim output of the formatter run in check-only mode (pass 2), or
 "Not applicable — task wrote no source files">
 
 ## Platform Cross-Check
 
-<verbatim output of all four cross-check commands from docs/ENVIRONMENT.md §7>
+<verbatim output of all cross-check commands from docs/ENVIRONMENT.md §7>
 
 ## Project Gates
 
 <verbatim output for each applicable gate from docs/ENVIRONMENT.md §8, or
 "None applicable — task does not touch config fields, handler signatures, or node types.">
 
+## Public API Delta
+
+<Output of: git diff HEAD -- <modified_files> | grep "^+.*pub " | head -40
+List every new pub item introduced — name, type (fn/struct/trait/enum), module path.
+If the grep returned nothing: "No new pub items introduced.">
+
 ## Deviations from Plan
 
-<Bulleted list of any deviations from the approved plan. If none: "None.">
+<Bulleted list of any deviations from the approved plan's In Scope, Files Affected, or
+Public API Surface sections. If a deviation changes a type or signature other tasks depend
+on, flag it explicitly. "None." if no deviations.>
 
 ## Blockers
 
-<"None." or description of unresolved issues.>
+<"None." or description of unresolved issues, including MCP unavailability.>
 ```
 
 ---
