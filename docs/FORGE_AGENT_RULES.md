@@ -93,6 +93,7 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 5.7 | **Platform cross-check** — run all four commands defined in `docs/ENVIRONMENT.md §7` before writing the report. Record verbatim output in `## Platform Cross-Check`. A clean Linux build is not sufficient; the Windows cross-check is always required. |
 | 5.8 | **Config surface sync** — any task that adds, renames, or removes a field on `ServerConfig` or any nested config struct must in the same task: (a) update `anvilml.toml`; (b) update `docs/ENVIRONMENT.md §4`. Run Gate 1 (`config_reference`) to confirm. |
 | 5.9 | **Two-pass format contract** — run formatter in-place before lint (pass 1), then in check-only mode before staging (pass 2). See `docs/ENVIRONMENT.md §6` for exact commands and the three-command resolution if pass 2 is non-zero. |
+| 5.10 | **Test catalogue sync** — any task that adds or modifies a test file MUST update `docs/TESTS.md` in the same task, adding or updating one entry per new or changed test, using the format defined in `ANVILML_DESIGN.md §16.1`. A task that adds tests without updating `docs/TESTS.md` is incomplete and must not be staged. If `docs/TESTS.md` does not yet exist, create it with entries covering only the tests introduced by this task. |
 
 ---
 
@@ -500,9 +501,14 @@ The ACT agent verifies this table before staging. If no new public items: "None.
 
 ## Tests
 
-| Test File | Test Name | What It Verifies | Acceptance Command |
-|-----------|-----------|-----------------|-------------------|
-| <path> | <name> | <one sentence> | <runnable command> exits 0 |
+<One row per test introduced by this task. The ACT agent uses this table as the source
+of truth when writing `docs/TESTS.md` entries — populate all columns fully while the
+test's purpose is freshest. The ACT agent must not need to reconstruct this information
+from the source code.>
+
+| Test File | Test Name | What It Verifies | Preconditions | Inputs | Expected Output | Acceptance Command |
+|-----------|-----------|-----------------|---------------|--------|----------------|--------------------|
+| <path> | <fn_name or test_id> | <one sentence> | <setup state required> | <inputs or env vars> | <expected result or side effect> | <runnable command> exits 0 |
 
 ## CI Impact
 

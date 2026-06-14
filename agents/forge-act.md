@@ -207,6 +207,15 @@ commands come from `docs/ENVIRONMENT.md`.
      patterns (e.g. a guard struct with a `Drop` impl, or a finally block in Python). See
      `ENVIRONMENT.md §11.3`.
 
+3a. **TESTS.MD**: Immediately after writing test files — while the purpose and context of
+    each test is still live in the session — update `docs/TESTS.md` with one entry per new
+    or modified test, using the format defined in `ANVILML_DESIGN.md §16.1`. Use the plan's
+    `## Tests` table as the starting point for preconditions, inputs, and expected output,
+    then refine based on what was actually implemented. If `docs/TESTS.md` does not yet
+    exist, create it now with entries for this task's tests only. Do not defer this step —
+    the implementation context needed to write accurate entries is available now and will
+    not be available later. See `FORGE_AGENT_RULES.md §5.10`.
+
 4. **COMPILE CHECK**: Before running the full test suite, run a fast compile check:
    ```
    cargo check --workspace --features mock-hardware   # Rust
