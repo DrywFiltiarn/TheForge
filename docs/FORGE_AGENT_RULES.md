@@ -164,7 +164,7 @@ A report that does not begin with `# Plan Report: <TASK_ID>` or
 ```bash
 # For plan reports:
 head -1 .forge/reports/<TASK_ID>_plan.md        # must print: # Plan Report: <TASK_ID>
-grep "^## " .forge/reports/<TASK_ID>_plan.md    # must show 11 section headings
+grep "^## " .forge/reports/<TASK_ID>_plan.md    # must show 12 section headings
 wc -l .forge/reports/<TASK_ID>_plan.md          # must be > 40 lines
 
 # For implementation reports:
@@ -417,7 +417,7 @@ the agent file takes precedence.
 Output path: `.forge/reports/<TASK_ID>_plan.md`
 
 Every section is mandatory. Use exactly these 11 headings in this order. `grep "^## "` on
-the finished report must return exactly 11 lines.
+the finished report must return exactly 12 lines.
 
 ```markdown
 # Plan Report: <TASK_ID>

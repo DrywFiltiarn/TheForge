@@ -176,65 +176,48 @@ section has no applicable content, write "None." under the heading — never omi
 
 ## Objective
 
-<One paragraph. State what this task produces, why it is needed at this point in the
-build sequence, and what observable state the system will be in when the task completes.
-"Observable state" means what a developer can do or verify — a curl command that now works,
-a test that now passes, a log line that now appears — not an internal description of what
-code was written.>
+<one paragraph>
 
 ## Scope
 
 ### In Scope
-<Bulleted list. Be specific: name the files, types, functions, and traits this task creates
-or modifies. Vague entries like "implement the scheduler" are not acceptable.>
+<bulleted list>
 
 ### Out of Scope
-<Bulleted list. Explicitly name adjacent work that a reader might assume is included but is
-not. If the task creates a stub that a future task will complete, say so here.>
+<bulleted list>
 
 ## Existing Codebase Assessment
 
-<One to three paragraphs summarising what you found in the codebase inspection step. Cover:
+<One to three paragraphs summarising what was found during the codebase inspection:
 (a) what already exists that this task builds on;
-(b) the established patterns (naming, error handling, test style, logging style) this task
-    must follow to remain consistent;
-(c) any gap or discrepancy between the design doc and the current source that affects this
-    task's approach.
-If the task is in Phase 000 or 001 and no prior source exists, write "No prior source exists.
-This task establishes the baseline patterns for subsequent phases.">
+(b) the established patterns (naming, error handling, test style, logging) to follow;
+(c) any gap between the design doc and current source that affects the approach.
+If no prior source exists (Phase 000/001): "No prior source exists. This task establishes
+the baseline patterns for subsequent phases.">
 
 ## Resolved Dependencies
 
-<Table. One row per external crate or package this task introduces or references by name.
-Every row must have been resolved via MCP — not recalled from memory. If no new external
-dependencies are introduced, write "None." Do not omit the section heading.>
+<One row per external crate or package this task introduces or references by name.
+Every row must be resolved via MCP — not recalled from training data.
+If no new dependencies: write "None." Do not omit the section heading.>
 
-| Type   | Name       | Version verified | MCP source     | Feature flags confirmed |
-|--------|------------|-----------------|----------------|------------------------|
-| crate  | zeromq     | 0.6.1           | rust-docs MCP  | tokio                  |
-| python | pyzmq      | 26.2.0          | pypi-query MCP | n/a                    |
+| Type   | Name    | Version verified | MCP source     | Feature flags confirmed |
+|--------|---------|-----------------|----------------|------------------------|
+| crate  | zeromq  | 0.6.1           | rust-docs MCP  | tokio                  |
+| python | pyzmq   | 26.2.0          | pypi-query MCP | n/a                    |
 
-If an MCP lookup returned a version that differs from what the task context or design doc
-specified, record both: write the MCP-resolved version in the `Version verified` column and
+If the MCP result differs from the task context or design doc, record both versions and
 add a note: "Task context specified X.Y.Z — overridden by MCP result."
 
 ## Approach
 
-<Numbered steps. Each step must be specific enough that a programmer can execute it without
-making any architectural decisions. For each step that introduces a non-obvious implementation
-choice, include a brief inline rationale — one sentence explaining why this approach was
-chosen over the obvious alternative. Examples of rationale: "Use Arc<Mutex<>> rather than
-RwLock<> here because the socket is written from two tasks (reader + writer) and contention
-is negligible at the message rate expected." Steps without a rationale note are acceptable
-when the approach is dictated directly by the design doc or by an existing pattern in the
-codebase.>
+<numbered steps, each specific enough to execute deterministically>
 
 ## Public API Surface
 
-<A table or code block showing every new pub item this task introduces — function signatures,
-struct definitions, trait implementations, Python class/function signatures. Include the crate
-or module path. This table is what the ACT agent verifies before staging. If the task adds no
-new public items, write "None.">
+<Declare every pub item this task introduces: function signatures, struct fields,
+trait definitions, re-exports. If the task modifies an existing pub item, show the
+before/after signature. Include the crate or module path. If no pub items: write "None.">
 
 ## Files Affected
 
@@ -331,8 +314,8 @@ one corrective overwrite is permitted (see FORGE_AGENT_RULES §8).
 Run exactly these three commands — no Python scripts, no complex verification:
 
 ```bash
-head -1 .forge/reports/<TASK_ID>_plan.md        # must print: # Plan Report: <TASK_ID>
-grep "^## " .forge/reports/<TASK_ID>_plan.md     # must show all 11 section headings
+head -1 .forge/reports/<TASK_ID>_plan.md         # must print: # Plan Report: <TASK_ID>
+grep "^## " .forge/reports/<TASK_ID>_plan.md     # must show all 12 section headings
 wc -l .forge/reports/<TASK_ID>_plan.md           # must be > 40 lines
 ```
 
