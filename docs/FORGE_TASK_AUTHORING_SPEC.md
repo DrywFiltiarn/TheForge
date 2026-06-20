@@ -16,7 +16,9 @@
 6. [Task JSON — ID and Phase Numbering](#6-task-json--id-and-phase-numbering)
 7. [TASKS_PHASE Document — Purpose and Location](#7-tasks_phase-document--purpose-and-location)
 8. [TASKS_PHASE Document — Format Specification](#8-tasks_phase-document--format-specification)
+   - [8a. Phase Acceptance Criteria — Worked Pattern Reference](#8a-phase-acceptance-criteria--worked-pattern-reference)
 9. [TASKS_PHASE Document — Section Reference](#9-tasks_phase-document--section-reference)
+   - [9a. docs/RUNNABLE_PROOF.md — the project-wide proof summary](#9a-docsrunnable_proofmd--the-project-wide-proof-summary)
 10. [Task Sizing Rules](#10-task-sizing-rules)
 11. [Context Field Writing Guide](#11-context-field-writing-guide)
 12. [Dependency (prereqs) Design Guide](#12-dependency-prereqs-design-guide)
@@ -391,7 +393,19 @@ the context field in tasks_phase<NNN>.json.>
 
 <The full set of commands that must exit 0 for the phase to be considered
 complete. These are checked manually before moving to the next phase.
-Each line is a concrete, runnable command.>
+Each line is a concrete, runnable command.
+
+This section has two parts, in order:
+1. The standard gate commands (cargo test, pytest, clippy, Windows cross-check,
+   etc.) — these prove the code compiles and unit/integration tests pass.
+2. A Runnable Proof: one or more commands, marked with a `# Runnable Proof
+   (manual):` comment, that exercise the phase's new observable capability
+   against a live running instance (a bound server, a real subprocess, a
+   real file on disk) — not just the test suite. See §9 "Phase Acceptance
+   Criteria — mandatory" for the full requirement and the narrow exemptions.
+   If the phase produces no new external observable behaviour, write
+   `# Runnable Proof: not applicable — <one-sentence reason>` instead of
+   omitting the section.>
 
 ```
 cargo test --workspace --features mock-hardware
@@ -400,7 +414,36 @@ cargo run -p anvilml-openapi
 pnpm type-check
 pnpm test:run
 ANVILML_WORKER_MOCK=1 python -m pytest
+# Runnable Proof (manual): <one-line statement of the capability being proven>
+cargo run --features mock-hardware &
+sleep <N>
+curl -s <endpoint> | python3 -c "import sys,json; d=json.load(sys.stdin); assert <condition>"
+# -> <expected observable result>
+kill %1
 ```
+
+---
+
+## 8a. Phase Acceptance Criteria — Worked Pattern Reference
+
+The standard shape for a Runnable Proof against a live server, used consistently
+across this project's phases, is:
+
+```bash
+cargo run --features mock-hardware &
+sleep <N>                                   # allow startup / worker Ready
+curl -s <verb-and-path> | python3 -c "..."  # exercise the capability; assert on the JSON
+# -> <one-line comment stating the expected, literal result>
+kill %1
+```
+
+Adapt the verb (`curl -X POST ...`, `websocat ...`, a `for` polling loop, a
+`kill <pid>` to simulate a crash) to what the phase actually delivers, but keep
+the three-part shape: start the binary, exercise it, tear it down. Never write a
+Runnable Proof step that only re-runs `cargo test` under another name — if the
+only way to observe the capability is via the test suite, the phase has no new
+external observable behaviour and should use the "not applicable" form from §9
+instead of a disguised test invocation.
 
 ---
 
@@ -458,9 +501,43 @@ The **Acceptance criterion** line must be a runnable shell command or sequence. 
 
 A fenced code block containing the full set of commands to run. Must include all test commands across all projects touched by this phase.
 
+**This block must also contain a Runnable Proof** — one or more commands, clearly marked with a `# Runnable Proof (manual):` comment, that exercise the phase's new observable capability against a live running instance of the system (a bound server answering a real HTTP/WebSocket request, a real subprocess being killed and observed, a real file written to disk) rather than against the test suite. `cargo test`, `pytest`, `cargo clippy`, and the Windows cross-check are necessary gates but are never sufficient on their own and never substitute for the Runnable Proof — see `docs/PHASES.md` §Structure, rule 2 ("Every phase ends with a Runnable Proof"). The "Runnable Proof (summary)" column already committed for this phase number in `docs/PHASES.md`'s Phase Map is the floor, not the ceiling — restate it here as a concrete, copy-pasteable command sequence.
+
+The standard shape (see §8a for the full pattern and rationale) is: start the binary in the background, `sleep` long enough for startup or worker `Ready`, exercise the capability with `curl`/`websocat`/a poll loop, assert on the literal observable result in a trailing `# ->` comment, then `kill` the background process. Do not write a Runnable Proof step that only re-invokes the test suite under a different name.
+
+**Narrow exemption.** A phase may omit the live-instance proof, replacing it with the literal line `# Runnable Proof: not applicable — <one-sentence reason>`, only when **both** of the following hold:
+- The phase introduces no new HTTP endpoint, WebSocket event, CLI flag, file-on-disk artifact, or other capability a human or script could observe from outside the test process; and
+- The phase is one of: (a) pure repository/CI scaffolding with nothing yet running (e.g. the first phase of a project), (b) an internal refactor or correctness fix with no `pub` API or behavioural change (tagged `"refactor"` per §13), or (c) a phase whose own stated deliverable is a build/lint artifact (a generated file, a packaged binary, a documentation site) where the build or lint command itself *is* the full proof.
+
+A phase that adds a new endpoint, event, or CLI surface does not qualify for the exemption merely because its mock-mode behavior is limited (e.g. an empty result set, a zero-length list) — an empty-but-200 response, or a 503-then-200 transition, is still a real, demonstrable, externally observable result and must be shown.
+
 ### Known Constraints and Gotchas — mandatory
 
 Even if there are no gotchas, include the section with the text "None identified." Omitting it entirely signals the section was forgotten, not that there are no constraints.
+
+### docs/RUNNABLE_PROOF.md update — mandatory
+
+Authoring or amending a phase's Runnable Proof is not complete until `docs/RUNNABLE_PROOF.md` is updated in the same change. See [Section 9a](#9a-docsrunnable_proofmd--the-project-wide-proof-summary) for the document's required format and update procedure. A `TASKS_PHASE<NNN>.md` Phase Acceptance Criteria edit and the corresponding `docs/RUNNABLE_PROOF.md` entry are authored together, exactly like the `tasks_phase<NNN>.json` / `TASKS_PHASE<NNN>.md` pairing in §1 — one is never committed without the other.
+
+---
+
+## 9a. docs/RUNNABLE_PROOF.md — the project-wide proof summary
+
+### Purpose
+
+`docs/RUNNABLE_PROOF.md` is a single project-wide index of every phase's Runnable Proof, kept separate from the standard per-phase test gates. Its purpose is to let a human or agent answer "how do I manually verify phase N actually works" by reading one document, without paging through every `TASKS_PHASE<NNN>.md` and mentally filtering out the `cargo test`/`pytest`/`clippy`/cross-check boilerplate that is identical across nearly all of them.
+
+### What it must contain
+
+One entry per phase, in phase order, each naming the phase, the capability it proves, and the literal Runnable Proof command sequence — copied verbatim from that phase's `TASKS_PHASE<NNN>.md`, comment markers and all. Phases that are legitimately exempt under §9's narrow exemption are still listed, with the `# Runnable Proof: not applicable — <reason>` line shown rather than omitted, so the document remains a complete index and a reader is never left wondering whether a phase was simply skipped during authoring.
+
+### What it must never contain
+
+The standard gate commands — `cargo test`, `cargo clippy`, `ANVILML_WORKER_MOCK=1 ... pytest`, the Windows cross-check, `cargo fmt --check` — are never reproduced in this document, even as context. They are identical across nearly every phase and add no information; repeating them here would defeat the document's purpose of being a fast, low-noise reference. If a phase's only Runnable Proof line happens to be a non-standard test invocation that genuinely demonstrates external behaviour (e.g. Phase 008's 1000-trip stress test, which is itself the proof), that line is included; the routine gates are not.
+
+### Update procedure
+
+Whenever a `TASKS_PHASE<NNN>.md`'s Phase Acceptance Criteria block gains, loses, or changes its Runnable Proof lines, `docs/RUNNABLE_PROOF.md` is updated in the same commit to match — copy the new Runnable Proof block verbatim into that phase's entry. When a new phase is authored, its `docs/RUNNABLE_PROOF.md` entry is added at the same time as its `TASKS_PHASE<NNN>.md`, not deferred to a later cleanup pass. This document is never the source of truth for a phase's proof — `TASKS_PHASE<NNN>.md` is — but it must never silently drift out of sync with it.
 
 ---
 
@@ -658,6 +735,13 @@ is complete. Be as precise as possible.>
 - Every task must have a runnable acceptance criterion command
 - Tasks tagged "manual" need no acceptance criterion command
 - Do not create tasks that span two subsystems
+- The phase's "Phase Acceptance Criteria" block must include a Runnable Proof
+  (commands marked `# Runnable Proof (manual):` that exercise the phase's new
+  capability against a live running instance, not just the test suite) unless
+  the phase qualifies for the narrow exemption in §9 — in which case write the
+  `# Runnable Proof: not applicable — <reason>` line instead of omitting it
+- `docs/RUNNABLE_PROOF.md` must be updated with this phase's entry as part of
+  the same output — see §9a for its required format
 
 ## Output format
 
@@ -673,6 +757,13 @@ Output only the JSON — no explanation, no markdown fences around the JSON itse
 
 The full phase document conforming exactly to the spec.
 Output only the markdown — no explanation before or after.
+
+### Output 3: docs/RUNNABLE_PROOF.md entry
+
+The single entry to append (or update in place, if this phase already has one)
+to `docs/RUNNABLE_PROOF.md`, conforming to §9a. Output only the markdown for
+that one phase's entry — no explanation before or after, and do not reproduce
+the standard test-gate commands.
 ```
 
 ---
@@ -692,6 +783,9 @@ After generation, validate against these checks before using the output:
 - [ ] Group letters in the TASKS_PHASE doc match the IDs in the JSON
 - [ ] Every task ID in the JSON appears in the TASKS_PHASE doc and vice versa
 - [ ] No cycle exists in the prereqs graph (trace manually for small sets; use `python forge.py --repo <project> --list` for large sets)
+- [ ] The Phase Acceptance Criteria block contains a `# Runnable Proof (manual):` section exercising a live instance, or the explicit `# Runnable Proof: not applicable — <reason>` line if exempt under §9
+- [ ] The Runnable Proof (or its "not applicable" line) is not a disguised re-invocation of `cargo test`/`pytest`/`clippy`
+- [ ] `docs/RUNNABLE_PROOF.md` has a matching, up-to-date entry for this phase
 
 ---
 
@@ -825,6 +919,14 @@ exits 0 with >=6 tests.
 \`\`\`
 cargo test -p anvilml-scheduler --features mock-hardware
 cargo clippy -p anvilml-scheduler --features mock-hardware -- -D warnings
+# Runnable Proof (manual): a submitted job is dispatched and reaches Running
+cargo run --features mock-hardware &
+sleep 5
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \\
+  -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
+# -> 200 with status Queued or Running (dispatch loop picked it up)
+kill %1
 \`\`\`
 
 ---
@@ -835,6 +937,28 @@ cargo clippy -p anvilml-scheduler --features mock-hardware -- -D warnings
   because it is held across await points when communicating with workers.
 - Tests that spawn workers must pass `--features mock-hardware` or they will
   attempt real GPU detection and fail in CI.
+```
+
+### Corresponding docs/RUNNABLE_PROOF.md entry
+
+This is Output 3 alongside the JSON and the TASKS_PHASE doc above — the same
+Runnable Proof block, without the standard `cargo test`/`clippy` lines:
+
+```markdown
+## Phase 3 — AnvilML Scheduler
+
+Capability: jobs submitted via `POST /v1/jobs` are queued and dispatched to a
+worker.
+
+\`\`\`bash
+cargo run --features mock-hardware &
+sleep 5
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \\
+  -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
+# -> 200 with status Queued or Running (dispatch loop picked it up)
+kill %1
+\`\`\`
 ```
 
 ---
