@@ -197,7 +197,7 @@ See [Section 11](#11-context-field-writing-guide) for full writing guidance. Key
 - Name every function, struct, enum, trait, or component to implement
 - Reference the authoritative design document (e.g. `API_CONTRACT.md`, `IPC_PROTOCOL.md`) for any interface that must match exactly
 - State the acceptance criterion as a runnable command with a concrete exit condition (e.g. `cargo test -p anvilml-core exits 0 with >=4 tests`)
-- Do not exceed 600 characters. If the task needs more context than that, it is too large and must be split.
+- Do not exceed 1000 characters. If the task needs more context than that, it is too large and must be split.
 
 ---
 
@@ -560,7 +560,7 @@ These rules prevent tasks from becoming too large for a single OpenCode session,
 - Implementation would take a senior developer more than 2 hours
 - The task creates more than 8 new source files
 - The task adds more than ~400 lines of net new production code
-- The `context` field exceeds 600 characters even after removing redundancy
+- The `context` field exceeds 1000 characters even after removing redundancy
 - The task requires reading more than 3 external reference documents
 - The task touches more than one logical subsystem (e.g. both scheduler and server)
 - The task cannot complete within a 120-minute OpenCode ACT session (use context window §65% threshold in `FORGE_AGENT_RULES.md §7` as a proxy: if the plan calls for more than ~6 major file operations, split)
@@ -620,7 +620,7 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 
 ### Length guideline
 
-Aim for 200–400 characters for straightforward tasks. Tasks requiring 400–600 characters indicate higher complexity and should be scrutinised for potential splitting. Tasks that cannot be specified in under 600 characters are too large.
+Aim for 300–650 characters for straightforward tasks. Tasks requiring 650–1000 characters indicate higher complexity and should be scrutinised for potential splitting. Tasks that cannot be specified in under 1000 characters are too large.
 
 ---
 
@@ -738,7 +738,7 @@ is complete. Be as precise as possible.>
 
 ## Constraints
 
-- Maximum context field length: 600 characters
+- Maximum context field length: 1000 characters
 - All task IDs must use the format P<phase_short>-<group><seq>
 - Each task targets exactly one project (no "repos" field)
 - Every task must have a runnable acceptance criterion command
@@ -787,7 +787,7 @@ After generation, validate against these checks before using the output:
 - [ ] All `prereqs` IDs exist in the array or in prior phases
 - [ ] No two tasks share an ID
 - [ ] Phase prefix in ID matches the `phase` field value
-- [ ] No `context` field exceeds 600 characters
+- [ ] No `context` field exceeds 1000 characters
 - [ ] Every `context` ends with a runnable acceptance criterion
 - [ ] Group letters in the TASKS_PHASE doc match the IDs in the JSON
 - [ ] Every task ID in the JSON appears in the TASKS_PHASE doc and vice versa
