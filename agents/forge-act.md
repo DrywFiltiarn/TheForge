@@ -13,6 +13,7 @@ permissions:
    "git add *": allow
    "git diff *": allow
    "git status *": allow
+   "git ls-files *": allow
    "npm *": allow
    "npx *": allow
    "pnpm *": allow
@@ -45,14 +46,16 @@ skipped.
 - Run build tools, compilers, formatters, linters, and test runners as documented in
   `docs/ENVIRONMENT.md` for this project
 - `git add -A` inside the project repo — STAGE ONLY, do not commit
-- `git diff *` and `git status *` for report generation (read-only)
+- `git diff *`, `git status *`, and `git ls-files *` (read-only; `git ls-files` is needed to
+  build the file list for the Python syntax-check gate — see step 4)
 - Write `.forge/reports/<TASK_ID>_implement.md`
 - Update `.forge/state/CURRENT_TASK.md`
 - Query MCP servers for dependency version resolution (see Dependency Version Resolution below)
   (MCP servers are local subprocesses — `webfetch` is denied; all external lookups go via MCP only)
 
 **Forbidden actions — these constitute session failure:**
-- Any `git` command other than `git add`, `git diff`, `git status` — enforced at the permission layer
+- Any `git` command other than `git add`, `git diff`, `git status`, `git ls-files` — enforced
+  at the permission layer
 - Any git operation outside the task's project repo
 - Deviating from the approved plan (no scope creep)
 - Deleting or modifying the `_plan.md` report for this task
@@ -141,7 +144,8 @@ most recent version visible in the project's lockfile as a fallback.
 
 **The version resolved by MCP at the start of the session is the floor. You may not write a
 lower version number into any manifest for any reason unless you have read a written
-compatibility constraint in `docs/ANVILML_DESIGN.md`, `docs/ENVIRONMENT.md`, or the
+compatibility constraint in `docs/<PROJECT>_DESIGN.md` (e.g. `docs/ANVILML_DESIGN.md` —
+check `docs/` for this project's actual filename), `docs/ENVIRONMENT.md`, or the
 approved plan that explicitly names an older version and gives a technical reason for it.**
 
 This rule exists because of a documented failure mode: an agent resolved crate `zeromq`
@@ -170,7 +174,7 @@ unmaintained version.
 The only legitimate reasons to write a version lower than the MCP-resolved current are:
 - A documented transitive dependency conflict visible in `Cargo.lock` that `cargo`'s
   resolver cannot satisfy at the current version (document the exact conflict)
-- An explicit version constraint stated in `docs/ENVIRONMENT.md` or `docs/ANVILML_DESIGN.md`
+- An explicit version constraint stated in `docs/ENVIRONMENT.md` or `docs/<PROJECT>_DESIGN.md`
   with a named technical reason (e.g. "zeromq 0.5.x — lacks async send on Windows")
 
 In both cases, write the justification verbatim under `## Deviations from Plan` before
@@ -206,20 +210,34 @@ commands come from `docs/ENVIRONMENT.md`.
      ports must restore state unconditionally — not just on success. Use `defer`-style
      patterns (e.g. a guard struct with a `Drop` impl, or a finally block in Python). See
      `ENVIRONMENT.md §11.3`.
+   - **Bounded waits on subprocess/IPC tests**: every test you write or modify that spawns a
+     subprocess and blocks waiting for its output (a socket `recv()`, `proc.wait()`,
+     `proc.communicate()`, or equivalent) MUST set an explicit timeout and, on timeout,
+     surface the subprocess's captured stderr in the failure message — never leave an
+     unguarded blocking wait on subprocess output. This applies retroactively: if this task's
+     work touches a test file that already contains an unguarded blocking call, add the
+     timeout as part of this task and record it in `## Deviations from Plan`. See
+     `FORGE_AGENT_RULES.md §5.12` and `docs/ENVIRONMENT.md §11.5` for the required pattern.
 
 3a. **TESTS.MD**: Immediately after writing test files — while the purpose and context of
     each test is still live in the session — update `docs/TESTS.md` with one entry per new
-    or modified test, using the format defined in `ANVILML_DESIGN.md §16.1`. Use the plan's
+    or modified test, using the format defined in `docs/<PROJECT>_DESIGN.md` (check `docs/`
+    for this project's actual filename, e.g. `ANVILML_DESIGN.md §16.1`). Use the plan's
     `## Tests` table as the starting point for preconditions, inputs, and expected output,
     then refine based on what was actually implemented. If `docs/TESTS.md` does not yet
     exist, create it now with entries for this task's tests only. Do not defer this step —
     the implementation context needed to write accurate entries is available now and will
     not be available later. See `FORGE_AGENT_RULES.md §5.10`.
 
-4. **COMPILE CHECK**: Before running the full test suite, run a fast compile check:
+4. **COMPILE CHECK**: Before running the full test suite, run a fast compile check covering
+   every source file this task touched — created AND modified, not new files alone, since a
+   syntax error in a modified file is just as fatal as one in a new file:
    ```
-   cargo check --workspace --features mock-hardware   # Rust
-   python -m py_compile <new_files>                   # Python
+   cargo check --workspace --features mock-hardware           # Rust
+   python -m py_compile <all created or modified .py files>   # Python (or the exact
+                                                                # command in docs/ENVIRONMENT.md
+                                                                # §6 if one is defined there —
+                                                                # it takes precedence)
    ```
    Fix all compile errors before proceeding to tests. Running tests against broken code
    wastes time and produces confusing output.
@@ -365,6 +383,13 @@ can assess downstream impact. "None." if no deviations.>
 - Build failures caused by code written in this session: fix them (not blockers)
 - Build failures from pre-existing issues not introduced by this task: document as blockers,
   set Status=BLOCKED, STOP
+- Compile/syntax-check gate (step 4) fails on a file this task did not touch: pre-existing
+  defect — document as a blocker, set Status=BLOCKED, STOP. On a file this task did touch:
+  fix it before proceeding, same as any other build failure.
+- A test that spawns a subprocess and blocks on its output appears to hang: do not wait it
+  out — this is the exact failure mode `FORGE_AGENT_RULES.md §5.12` exists to prevent. Add
+  the missing timeout (see `docs/ENVIRONMENT.md §11.5`) rather than treating it as a slow
+  test; an unguarded blocking wait is the defect, not the symptom.
 - Flaky tests (pass on retry): document in Test Results, ensure final run shows 0 failures
 - MCP server unavailable: document in Blockers, fall back to lockfile versions
 - Formatter breaks compilation after pass 3: document as blocker, set Status=BLOCKED, STOP

@@ -24,7 +24,7 @@
 12. [Dependency (prereqs) Design Guide](#12-dependency-prereqs-design-guide)
 13. [Tag Reference](#13-tag-reference)
 14. [LLM Generation Prompt Template](#14-llm-generation-prompt-template)
-15. [Complete Worked Example](#15-complete-worked-example)
+15. [Complete Worked Example (Illustrative Only)](#15-complete-worked-example-illustrative-only)
 
 ---
 
@@ -45,9 +45,9 @@ This document specifies the exact format, field semantics, validation rules, and
 
 **Task** — the smallest unit of work The Forge can execute. One OpenCode PLAN session followed by one OpenCode ACT session. Must be completable within a single 120-minute OpenCode session.
 
-**Phase** — a named group of tasks that together achieve a major milestone (e.g. "AnvilML Core Types"). Phases are numbered 001–899 for primary development phases. Phase numbers are sequential but not necessarily contiguous within the 001–899 range. Phases 900–999 are reserved for retrofit, correction, and adjustment phases (see §6). A phase has one `tasks_phase<NNN>.json` per project and one `TASKS_PHASE<NNN>.md` per project.
+**Phase** — a named group of tasks that together achieve a major milestone (e.g. "Core Domain Types" or "Scheduler"). Phases are numbered 001–899 for primary development phases. Phase numbers are sequential but not necessarily contiguous within the 001–899 range. Phases 900–999 are reserved for retrofit, correction, and adjustment phases (see §6). A phase has one `tasks_phase<NNN>.json` per project and one `TASKS_PHASE<NNN>.md` per project.
 
-**Project** — one of the registered repositories (`sindristudio`, `anvilml`, `bloomeryui`). Each task targets exactly one project. Cross-project work must be split into separate tasks, one per project.
+**Project** — one of the repositories registered in the orchestrator's `repos.json` for the current deployment. The set of valid project names is whatever `repos.json` lists — it is not fixed by this document and varies per deployment (a single-repo project might register only one name; a multi-repo project might register several). Each task targets exactly one project. Cross-project work must be split into separate tasks, one per project.
 
 **DAG** — the task dependency graph. `prereqs` references create directed edges. The Forge resolves execution order by topological sort within and across phase files. Cycles are a fatal error.
 
@@ -130,9 +130,9 @@ A single-line, imperative-mood summary of what the task produces. This text appe
 
 **Good examples:**
 ```
-"anvilml-core: config types"
-"anvilml-registry: SQLite persistence"
-"BloomeryUI: artifact gallery component"
+"anvilml-core: config types"          ← e.g. for project "anvilml"
+"demoproject-registry: SQLite persistence"
+"web-ui: artifact gallery component"
 "Launcher binary: graceful shutdown"
 ```
 
@@ -141,7 +141,7 @@ A single-line, imperative-mood summary of what the task produces. This text appe
 "Do the config stuff"           ← vague, no component reference
 "Implement everything in core"  ← not atomic
 "Fix bug"                       ← not descriptive enough
-"anvilml-core"                  ← no verb/outcome
+"demoproject-core"              ← no verb/outcome
 ```
 
 **Length:** 4–80 characters. Longer descriptions are truncated in commit messages.
@@ -160,14 +160,14 @@ The string form is used because JSON has no integer-string distinction in practi
 
 ### `project` — string, required
 
-The logical name of the single repository this task operates on. Must exactly match a key in `repos.json`.
+The logical name of the single repository this task operates on. Must exactly match a key in `repos.json` for the current deployment.
 
-**Current valid values:** `"sindristudio"`, `"anvilml"`, `"bloomeryui"`
+**Valid values:** whatever keys are present in this deployment's `repos.json`. This document does not hardcode a list — every deployment of The Forge registers its own set of projects (a single-repo deployment registers one key; a multi-repo deployment registers one key per repository). Consult the live `repos.json` for the authoritative set, never this document.
 
 **Rules:**
 - Exactly one project per task. If a task naturally spans two projects, split it.
 - The project name determines where OpenCode runs (`cwd`), where reports are written (`.forge/reports/` inside that repo), and which repo The Forge commits and pushes.
-- `"root"` is no longer a valid value (deprecated). Tasks that would have targeted `root` should target `sindristudio`.
+- A bare `"repos"` field (plural, listing multiple projects) is not supported — use `"project"` with a single string value. See §5 validation rules.
 
 ---
 
@@ -235,14 +235,14 @@ Phases are assigned sequentially starting at 1. They represent major development
 
 **Retrofit phases: 900–999.** Reserved exclusively for retrofit, correction, and adjustment work that must be inserted between already-executed primary phases without renumbering them. Retrofit phases are never part of the original plan — they are authored on demand when a gap in the committed codebase is identified (e.g. a rule added after earlier phases ran, a production bug requiring correction before the next phase begins). The filename satisfies the loader's `\d{3}` pattern and the task ID prefix reflects the numeric phase value (e.g. phase `900` → IDs `P900-A1`, `P900-A2`). Execution order is determined entirely by `prereqs`, not by the phase number, so a phase `900` file is picked up correctly relative to any primary phase as long as its prereqs and the prereqs of the tasks that depend on it are set correctly. When authoring a retrofit phase, identify every task in subsequent primary phases whose prereq chain must be updated to route through the new retrofit tasks, and update those prereq fields.
 
-Example mapping:
+Example mapping (illustrative only — substitute this project's actual phase names and milestones):
 
 | Phase | Name | Description |
 |-------|------|-------------|
-| 001 | Repository Scaffold | Repo structure, CI skeleton, crate stubs |
-| 002 | AnvilML Core Types | Config, domain types, IPC messages |
-| 003 | Hardware Detection | ROCm, CUDA, IPEX, mock detector |
-| 004 | Worker Management | WorkerPool, IPC bridge, env injection |
+| 001 | Repository Scaffold | Repo structure, CI skeleton, package/crate stubs |
+| 002 | Core Domain Types | Config, domain types, IPC messages |
+| 003 | Hardware Detection | Backend-specific device detection, mock detector |
+| 004 | Worker Management | Worker pool, IPC bridge, env injection |
 | ... | ... | ... |
 | 900 | Logging Retrofit | Retrofit §11 logging to phases 000–008 before phase 009 begins |
 | 901–999 | (reserved) | Future retrofit phases as needed |
@@ -251,16 +251,16 @@ Example mapping:
 
 Within a phase, tasks are grouped by subsystem using uppercase letters. There is no fixed mapping of letters to subsystems — assign letters to maintain logical grouping within each phase. Document the mapping in the phase's `TASKS_PHASE<NNN>.md`.
 
-Example for phase 1:
-- `A` — anvilml-core
-- `B` — anvilml-registry
+Example for a hypothetical phase 1 in a project with a Rust backend, a Python worker, and a TypeScript frontend (substitute this project's actual subsystem names):
+- `A` — core domain types
+- `B` — persistence/registry
 - `C` — Python worker
-- `D` — anvilml-worker
-- `E` — anvilml-scheduler
-- `F` — anvilml-server
+- `D` — worker pool/IPC bridge
+- `E` — scheduler
+- `F` — HTTP/WS server
 - `G` — OpenAPI generation
 - `H` — Launcher binary
-- `I` — BloomeryUI
+- `I` — frontend UI
 - `J` — Integration
 
 ### Sequence numbers within a group
@@ -292,7 +292,7 @@ The file lives inside the target repository's `docs/` directory, at the path Ope
     API_CONTRACT.md
 ```
 
-When a phase spans multiple projects (e.g. Phase 2 includes both `anvilml` and `bloomeryui` tasks), a copy of the `TASKS_PHASE<NNN>.md` must exist in each project's `docs/` directory. The copies may differ in the sections they emphasise — the AnvilML copy covers Rust/Python concerns in depth; the BloomeryUI copy covers TypeScript/React concerns.
+When a phase spans multiple projects (e.g. a phase that includes both a Rust backend project and a TypeScript frontend project), a copy of the `TASKS_PHASE<NNN>.md` must exist in each project's `docs/` directory. The copies may differ in the sections they emphasise — a backend project's copy might cover Rust/Python concerns in depth, while a frontend project's copy covers TypeScript/React concerns.
 
 ### Filename
 
@@ -410,10 +410,11 @@ This section has two parts, in order:
 ```
 cargo test --workspace --features mock-hardware
 cargo clippy --workspace --features mock-hardware -- -D warnings
-cargo run -p anvilml-openapi
+cargo run -p <openapi-generator-package>
 pnpm type-check
 pnpm test:run
-ANVILML_WORKER_MOCK=1 python -m pytest
+python -m py_compile $(git ls-files '<worker-dir>/*.py')
+<PROJECT>_WORKER_MOCK=1 python -m pytest
 # Runnable Proof (manual): <one-line statement of the capability being proven>
 cargo run --features mock-hardware &
 sleep <N>
@@ -533,7 +534,16 @@ One entry per phase, in phase order, each naming the phase, the capability it pr
 
 ### What it must never contain
 
-The standard gate commands — `cargo test`, `cargo clippy`, `ANVILML_WORKER_MOCK=1 ... pytest`, the Windows cross-check, `cargo fmt --check` — are never reproduced in this document, even as context. They are identical across nearly every phase and add no information; repeating them here would defeat the document's purpose of being a fast, low-noise reference. If a phase's only Runnable Proof line happens to be a non-standard test invocation that genuinely demonstrates external behaviour (e.g. Phase 008's 1000-trip stress test, which is itself the proof), that line is included; the routine gates are not.
+The standard gate commands — `cargo test`, `cargo clippy`, the dynamically-typed-language
+syntax/compile gate (e.g. `python -m py_compile`, per `docs/ENVIRONMENT.md §6` and
+§5 rule 5.11 in `FORGE_AGENT_RULES.md`), the project's mock-mode test invocation (e.g.
+`<PROJECT>_WORKER_MOCK=1 ... pytest`), the Windows cross-check, `cargo fmt --check` —
+are never reproduced in this document, even as context. They are identical across
+nearly every phase and add no information; repeating them here would defeat the
+document's purpose of being a fast, low-noise reference. If a phase's only Runnable
+Proof line happens to be a non-standard test invocation that genuinely demonstrates
+external behaviour (e.g. a 1000-trip stress test, which is itself the proof), that
+line is included; the routine gates are not.
 
 ### Update procedure
 
@@ -593,7 +603,7 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 3. **The reference document** for any interface contract. Do not restate the contract inline — cite the document.
 4. **The test command** as a complete shell command, with the minimum test count where relevant (e.g. `>=5 tests`).
 5. **Feature flags** if required (e.g. `--features mock-hardware`).
-6. **Environment variables** that must be set for tests (e.g. `ANVILML_WORKER_MOCK=1`).
+6. **Environment variables** that must be set for tests (e.g. `<PROJECT>_WORKER_MOCK=1`).
 
 ### What to never include
 
@@ -605,7 +615,7 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 ### Tone and style
 
 - Imperative mood: "Implement", "Add", "Create", "Return", "Ensure" — not "Should implement" or "May need to add"
-- Name things precisely: `WorkerPool` not "the pool struct", `cargo test -p anvilml-worker` not "run tests"
+- Name things precisely: `WorkerPool` not "the pool struct", `cargo test -p <crate-name>` not "run tests"
 - Cite measurements: `>=4 tests`, `exits 0`, `within 6s` — not "adequate tests" or "should pass"
 
 ### Length guideline
@@ -628,7 +638,7 @@ The Forge executes tasks sequentially (one at a time), but the DAG structure doc
 
 ### Cross-project dependencies
 
-A task in `bloomeryui` that depends on an `anvilml` task (e.g. because it needs the generated `openapi.json`) must list that `anvilml` task in its `prereqs`. Cross-project prereqs are valid and The Forge handles them correctly — the DAG does not care which project a task belongs to.
+A task in one project that depends on a task in another project (e.g. a frontend task that needs a backend project's generated `openapi.json`) must list that other project's task in its `prereqs`. Cross-project prereqs are valid and The Forge handles them correctly — the DAG does not care which project a task belongs to. (This only applies to deployments with more than one registered project; a single-repo deployment has no cross-project dependencies.)
 
 ### Phase boundaries
 
@@ -698,10 +708,9 @@ orchestrator (OpenCode-based). Read this entire spec before producing any output
 
 ## Project context
 
-Registered projects:
-- sindristudio: <brief description>
-- anvilml: <brief description>
-- bloomeryui: <brief description>
+Registered projects (replace with this deployment's actual `repos.json` keys — there may be one or several):
+- <project_key_1>: <brief description>
+- <project_key_2>: <brief description>
 
 Reference documents available in each project's docs/ directory:
 - ENVIRONMENT.md — environment variables and config fields
@@ -774,7 +783,7 @@ After generation, validate against these checks before using the output:
 
 - [ ] Every task has all six fields: `id`, `description`, `phase`, `project`, `prereqs`, `context`, `tags`
 - [ ] No task has a `repos` field
-- [ ] All `project` values are registered names (`sindristudio`, `anvilml`, `bloomeryui`)
+- [ ] All `project` values are registered names — i.e. they exist as keys in this deployment's `repos.json` (this document does not enumerate them; they vary per deployment)
 - [ ] All `prereqs` IDs exist in the array or in prior phases
 - [ ] No two tasks share an ID
 - [ ] Phase prefix in ID matches the `phase` field value
@@ -789,7 +798,17 @@ After generation, validate against these checks before using the output:
 
 ---
 
-## 15. Complete Worked Example
+## 15. Complete Worked Example (Illustrative Only)
+
+> **This section is illustrative, not normative.** It uses a real project, `anvilml`
+> (a Rust/Python AI-inference service), purely to show what a fully-formed task pair
+> looks like with concrete, non-placeholder content — concrete names read better than
+> `<placeholder>` text when learning the format. Nothing here implies `anvilml` is a
+> registered project in your deployment, that `sindristudio`/`bloomeryui`/`anvilml`
+> are the only valid `project` values (they are not — see §4 `project` field and §2
+> Concepts and Definitions), or that any of the specific types, crate names, or file
+> paths below (`JobQueue`, `VramLedger`, `anvilml-scheduler`, etc.) are conventions
+> this spec requires. Substitute your own project's real names when authoring tasks.
 
 The following is a minimal but complete example of two tasks in a hypothetical Phase 3 targeting the `anvilml` project. It shows both the `tasks_phase003.json` entries and the corresponding `TASKS_PHASE003.md` sections.
 

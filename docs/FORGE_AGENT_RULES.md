@@ -8,7 +8,9 @@
 This document is **project-agnostic**. Project-specific build commands, test runners,
 platform targets, config sync requirements, and technology stack details are defined
 in the project's own `docs/ENVIRONMENT.md`, `docs/ARCHITECTURE.md`, and
-`docs/ANVILML_DESIGN.md`. Read those documents before writing any plan or code.
+`docs/<PROJECT>_DESIGN.md` (e.g. `docs/ANVILML_DESIGN.md` for a project named `anvilml`,
+`docs/DEMOPROJECT_DESIGN.md` for a project named `demoproject`). Read those documents
+before writing any plan or code.
 
 ---
 
@@ -44,7 +46,7 @@ Project: <name>
 
 - **TASK_ID format:** `P<phase>-<letter><number>` e.g. `P1-A3`, `P12-C2`
 - **Phase numbering:** 001–999; maps to a named phase in `docs/PHASES.md`
-- **Project:** logical name (e.g. `anvilml`)
+- **Project:** logical name as registered in `repos.json` (e.g. `demoproject`)
 - Each task targets exactly **one** project. Multi-repo work is split into separate tasks.
 
 ---
@@ -87,13 +89,15 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 5.1 | Every task that writes source code MUST include tests. No exceptions. |
 | 5.2 | The test suite for the affected module/crate/package must exit 0 before writing the report. |
 | 5.3 | The full workspace test suite must exit 0 before writing the report. Regressions caused by this task must be fixed. |
-| 5.4 | **Test file placement:** Rust — unit tests that cannot fit inline (> 20 lines or require test helpers) go in `crates/{name}/tests/{concern}_tests.rs`. Integration tests go in `backend/tests/`. Python — in `worker/tests/test_{module}.py`. See `docs/ENVIRONMENT.md §11` for the full convention. |
+| 5.4 | **Test file placement:** follow the convention defined in `docs/ENVIRONMENT.md §11` for this project's language(s) — e.g. for a Rust/Python project, unit tests too large for an inline block go in the crate's `tests/` directory and Python tests go in the worker/package's `tests/` directory. Do not invent a placement convention; if `docs/ENVIRONMENT.md §11` does not cover the language in question, write a blocker and STOP. |
 | 5.5 | When CI workflow files are modified: preserve all existing jobs, add new job/step only if the plan specifies it, do not disable or skip any existing test job. |
 | 5.6 | If tests fail after implementation, fix the failures before writing the report. Test-fix is part of the ACT session. Do NOT write the implementation report with known failures. |
-| 5.7 | **Platform cross-check** — run all four commands defined in `docs/ENVIRONMENT.md §7` before writing the report. Record verbatim output in `## Platform Cross-Check`. A clean Linux build is not sufficient; the Windows cross-check is always required. |
-| 5.8 | **Config surface sync** — any task that adds, renames, or removes a field on `ServerConfig` or any nested config struct must in the same task: (a) update `anvilml.toml`; (b) update `docs/ENVIRONMENT.md §4`. Run Gate 1 (`config_reference`) to confirm. |
+| 5.7 | **Platform cross-check** — run all commands defined in `docs/ENVIRONMENT.md §7` before writing the report. Record verbatim output in `## Platform Cross-Check`. A clean build on the primary development platform is not sufficient; any cross-platform check the project defines is always required. |
+| 5.8 | **Config surface sync** — any task that adds, renames, or removes a field on this project's top-level config type or any nested config struct (named in `docs/ARCHITECTURE.md`) must in the same task: (a) update the project's checked-in config file/template; (b) update `docs/ENVIRONMENT.md §4`. Run the project's config-drift gate (see `docs/ENVIRONMENT.md §8`) to confirm. |
 | 5.9 | **Two-pass format contract** — run formatter in-place before lint (pass 1), then in check-only mode before staging (pass 2). See `docs/ENVIRONMENT.md §6` for exact commands and the three-command resolution if pass 2 is non-zero. |
-| 5.10 | **Test catalogue sync** — any task that adds or modifies a test file MUST update `docs/TESTS.md` in the same task, adding or updating one entry per new or changed test, using the format defined in `ANVILML_DESIGN.md §16.1`. A task that adds tests without updating `docs/TESTS.md` is incomplete and must not be staged. If `docs/TESTS.md` does not yet exist, create it with entries covering only the tests introduced by this task. |
+| 5.10 | **Test catalogue sync** — any task that adds or modifies a test file MUST update `docs/TESTS.md` in the same task, adding or updating one entry per new or changed test, using the format defined in `docs/<PROJECT>_DESIGN.md` (see that document's test-catalogue section for the exact heading). A task that adds tests without updating `docs/TESTS.md` is incomplete and must not be staged. If `docs/TESTS.md` does not yet exist, create it with entries covering only the tests introduced by this task. |
+| 5.11 | **Pre-test static/syntax check, dynamically-typed languages** — for any language without a compile step that would otherwise catch a syntax error (e.g. Python), any task that creates or modifies a source file in that language MUST run that language's fastest available syntax/compile-check (e.g. `python -m py_compile <files>`) and confirm it exits 0 *before* running that language's test suite. The exact command is defined per-project in `docs/ENVIRONMENT.md §6`; if the project has not yet defined one for a language it uses, write a blocker and STOP rather than skipping the check. This is not optional even when the task's own changes appear syntactically trivial — a syntax error in any module reachable by import from a subprocessed entry point causes IPC- or process-output-blocking tests to hang indefinitely rather than fail cleanly, and a static check costing milliseconds is the only reliable way to rule this out before investing time in the full test run. |
+| 5.12 | **Bounded waits in subprocess/IPC tests** — any new or modified test that spawns a subprocess and blocks waiting for its output (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent) MUST set an explicit timeout and handle the timeout case by surfacing the subprocess's captured stderr in the failure message. Never write or leave in place an unguarded blocking call on subprocess output of any kind, in any language. See `docs/ENVIRONMENT.md §11.5` for the required pattern. This rule applies retroactively: if a task's work touches a test file that already contains an unguarded blocking call, add the timeout as part of that task and record it under `## Deviations from Plan`. |
 
 ---
 
@@ -206,7 +210,7 @@ The exact required sections for each report type are defined in §16 and §17 be
 
 Logging is **mandatory** — not optional, not deferred. Every task that adds or modifies
 code must include appropriate logging before the task is marked complete. The specific
-mandatory log points for AnvilML are defined in `docs/ENVIRONMENT.md §9`.
+mandatory log points for this project are defined in `docs/ENVIRONMENT.md §9`.
 
 ### 11.1 General instrumentation obligation
 

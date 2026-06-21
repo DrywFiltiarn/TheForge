@@ -83,8 +83,9 @@ Inspect the following, at minimum:
   pub exports and established module structure)
 - Existing test files in `tests/` adjacent to the module under development (to understand
   the project's test style, fixture patterns, and what helper utilities already exist)
-- The types this task's code will consume or produce, whether defined in `anvilml-core` or
-  another crate — read the actual source, not just the design doc description
+- The types this task's code will consume or produce, wherever they are actually defined in
+  this project's codebase (e.g. a shared core/domain crate or module) — read the actual source,
+  not just the design doc description
 
 Do not plan based on the design doc alone. The design doc describes the target; the source
 files describe the current reality. Discrepancies between the two are risks that must be
@@ -280,6 +281,8 @@ approach section has these properties:
 **Rationale on non-obvious choices.** When the approach deviates from the simplest possible implementation, explain why. One sentence is sufficient. The absence of rationale on a non-obvious choice is a plan defect.
 
 **No over-specification.** Do not specify variable names, formatting choices, or implementation details that are purely style. Over-specification wastes the ACT agent's context without adding value.
+
+**Bounded waits on subprocess/IPC tests.** If the approach calls for a test that spawns a subprocess and waits for output from it (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent), the step must say so explicitly with a concrete timeout value and state that the timeout's failure path surfaces the subprocess's captured stderr. Do not leave this implicit — an unguarded blocking wait on subprocess output that dies before producing it hangs indefinitely rather than failing, which is exactly the failure mode `FORGE_AGENT_RULES.md §5.12` (and `docs/ENVIRONMENT.md §11.5`) exists to prevent. A plan step describing such a test without naming the timeout is incomplete.
 
 ## Quality Standards for the Risks Section
 
