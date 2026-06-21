@@ -61,7 +61,7 @@ from forge.forge_log import log, log_err, log_warn
 from forge.forge_repos import load_repos, REPOS, resolve_project_path, ensure_on_branch, ensure_forge_docs
 from forge.forge_state import (
     load_state, save_state, load_tasks,
-    validate_task_schema, find_next_task, print_dag_status,
+    validate_task_schema, validate_task_graph, find_next_task, print_dag_status,
     DEFAULT_STATE,
 )
 from forge.forge_git import revert_task_repo
@@ -74,6 +74,35 @@ def _ensure_runtime_dirs() -> None:
     """Create logs/ and agents/ directories beside forge.py if absent."""
     cfg.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     cfg.AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _validate_tasks_or_exit(tasks: list[dict]) -> None:
+    """
+    Run both per-task schema validation and whole-graph validation
+    (prereq existence, cycles, defers_to existence + downstream
+    positioning). Exits the process on any failure. Called at startup
+    and again on every hot-reload of the task list, so an edit made to
+    tasks_phase<NNN>.json between iterations cannot silently bypass
+    validation. See docs/FORGE_TASK_AUTHORING_SPEC.md §5 and §12a.
+    """
+    schema_errors = []
+    for task in tasks:
+        errs = validate_task_schema(task)
+        if errs:
+            for e in errs:
+                schema_errors.append(f"  {task.get('id', '?')}: {e}")
+    if schema_errors:
+        log_err("Task schema validation failed:")
+        for e in schema_errors:
+            log_err(e)
+        sys.exit(1)
+
+    graph_errors = validate_task_graph(tasks)
+    if graph_errors:
+        log_err("Task graph validation failed:")
+        for e in graph_errors:
+            log_err(f"  {e}")
+        sys.exit(1)
 
 
 def main() -> None:
@@ -169,19 +198,10 @@ def main() -> None:
     # ── Load tasks and state ───────────────────────────────────────────────────
     tasks = load_tasks(project=active_project, phase=args.phase)
 
-    # Validate task schemas
-    schema_errors = []
-    for task in tasks:
-        errs = validate_task_schema(task)
-        if errs:
-            for e in errs:
-                schema_errors.append(f"  {task.get('id', '?')}: {e}")
-    if schema_errors:
-        log_err("Task schema validation failed:")
-        for e in schema_errors:
-            log_err(e)
-        sys.exit(1)
-    log(f"Loaded {len(tasks)} tasks — schema OK")
+    # Validate task schemas and whole-graph properties (prereqs exist, no
+    # cycles, defers_to targets exist and are verified downstream).
+    _validate_tasks_or_exit(tasks)
+    log(f"Loaded {len(tasks)} tasks — schema and graph OK")
 
     state = load_state()
 
@@ -229,8 +249,11 @@ def main() -> None:
     target_task_id = args.task
 
     while True:
-        # Hot-reload tasks on every iteration (allows edits between runs)
+        # Hot-reload tasks on every iteration (allows edits between runs).
+        # Re-validate every time — an edit made between iterations must not
+        # silently bypass the schema/graph checks run at startup.
         tasks = load_tasks(project=active_project, phase=args.phase)
+        _validate_tasks_or_exit(tasks)
         state = load_state()
 
         if target_task_id:

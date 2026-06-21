@@ -53,9 +53,19 @@ Phase: <NNN>
 Project: <name>
 ```
 
+The header above does not include `defers_to` — it is a JSON-only field, not
+part of the injected prompt. If this task defers any scope, find out by
+reading `.forge/tasks/tasks_phase<NNN>.json` for the current `<TASK_ID>`'s
+own entry as part of step 1 below.
+
 On session start you MUST read the following files in order before writing any output:
 1. `.forge/state/CURRENT_TASK.md` — confirm the Task field matches the injected TASK_ID.
    If mismatch: write a one-line error to `.forge/reports/<TASK_ID>_plan.md` and STOP immediately.
+   While here, also read this task's own object in `.forge/tasks/tasks_phase<NNN>.json` and
+   note its `defers_to` field. If non-empty, you will need to read each named task's own
+   entry later (see "Quality Standards for the Out of Scope Section" below) before writing
+   `## Scope` — do this as part of step 5, since the named tasks are usually in the same
+   phase file you read there.
 2. `docs/FORGE_AGENT_RULES.md` — task atomicity, git rules, test/CI requirements, error handling,
    prohibited behaviours
 3. `docs/ENVIRONMENT.md` — build environment, toolchain, formatter, linter, test runner, and
@@ -185,7 +195,11 @@ section has no applicable content, write "None." under the heading — never omi
 <bulleted list>
 
 ### Out of Scope
-<bulleted list>
+<bulleted list. If any bullet defers named functionality to another task, it
+MUST name that task's ID, and that ID MUST also appear in this task's JSON
+`defers_to` field — never write an Out of Scope bullet that names a deferral
+target not also present in `defers_to`. See "Quality Standards for the
+Out of Scope Section" below.>
 
 ## Existing Codebase Assessment
 
@@ -283,6 +297,38 @@ approach section has these properties:
 **No over-specification.** Do not specify variable names, formatting choices, or implementation details that are purely style. Over-specification wastes the ACT agent's context without adding value.
 
 **Bounded waits on subprocess/IPC tests.** If the approach calls for a test that spawns a subprocess and waits for output from it (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent), the step must say so explicitly with a concrete timeout value and state that the timeout's failure path surfaces the subprocess's captured stderr. Do not leave this implicit — an unguarded blocking wait on subprocess output that dies before producing it hangs indefinitely rather than failing, which is exactly the failure mode `FORGE_AGENT_RULES.md §5.12` (and `docs/ENVIRONMENT.md §11.5`) exists to prevent. A plan step describing such a test without naming the timeout is incomplete.
+
+## Quality Standards for the Out of Scope Section
+
+`docs/FORGE_TASK_AUTHORING_SPEC.md §5`/`§12a` guarantees, at startup, that
+every entry in this task's `defers_to` field exists and is genuinely
+downstream of this task. It cannot guarantee the target's wording actually
+covers the deferred scope — that is this agent's job, every time a `## Out
+of Scope` bullet defers something:
+
+**Every Out of Scope deferral must cite a `defers_to` entry.** If you find
+yourself writing "X is out of scope, handled by a later task" without a
+specific task ID, stop — that sentence is the unvalidated form of the
+exact defect `defers_to` exists to prevent (see `FORGE_TASK_AUTHORING_SPEC.md
+§12a` for the incident this generalizes from). Name the task ID, and
+confirm that ID is present in the JSON `defers_to` field you read for this
+task at session start — if it is not there, you cannot add it (you have no
+write access to `tasks_phase<NNN>.json`, per the Session Contract above).
+
+**Verify coverage before trusting an existing `defers_to` entry.** Read
+the named task's `description` and `context` in the relevant
+`tasks_phase<NNN>.json`. Confirm, in good faith, that it genuinely states
+the deferred functionality as part of its own deliverable — not merely
+that it touches the same file, type, or subsystem. This is
+`FORGE_AGENT_RULES.md §4.7`.
+
+**If verification fails, this is a blocker, not something you can fix.**
+You cannot edit the task graph to correct a bad `defers_to` target or
+author the missing receiving task. Write `## Blockers` describing exactly
+what `defers_to` claims versus what the target task actually states, set
+`Status=BLOCKED` in `CURRENT_TASK.md`, and STOP — per `FORGE_AGENT_RULES.md
+§4.7`. Do not write a plan that quietly treats an unverified deferral as
+settled.
 
 ## Quality Standards for the Risks Section
 

@@ -50,6 +50,7 @@ del _sys, _os, _expected_venv, _in_venv, _in_forge_venv
 import forge.forge_config as cfg
 from forge.forge_repos import load_repos, REPOS, resolve_project_path
 from forge.forge_log import _ts
+from forge.forge_state import validate_task_graph
 
 # ─── ANSI colours ─────────────────────────────────────────────────────────────
 
@@ -191,6 +192,10 @@ def print_status(tasks: list[dict], state: dict) -> None:
         visible_len  = len(label)
         padding      = max(0, 20 - visible_len)
         print(f"  {tid:<12} {padded_label}{' ' * padding} {proj:<14} {desc}")
+
+        defers = task.get("defers_to", [])
+        if defers:
+            print(f"  {DIM}{'':<12} {'':<20} {'':<14} ⤷ defers to: {', '.join(defers)}{RESET}")
 
     print()
 
@@ -354,6 +359,17 @@ def main() -> None:
 
     tasks = _load_tasks(active_project, phase=args.phase)
     state = _load_state()
+
+    # Surface graph problems (bad prereqs/cycles/defers_to) as a warning —
+    # this tool is also used to inspect and recover an already-broken state,
+    # so it must not refuse to run; forge.py is the actual startup gate.
+    graph_errors = validate_task_graph(tasks)
+    if graph_errors:
+        print(f"\n{RED}⚠ Task graph has {len(graph_errors)} problem(s) — "
+              f"forge.py will refuse to start until these are fixed:{RESET}")
+        for e in graph_errors:
+            print(f"  {RED}• {e}{RESET}")
+        print()
 
     # ── Mutations (mutually exclusive) ────────────────────────────────────────
     if args.fail:

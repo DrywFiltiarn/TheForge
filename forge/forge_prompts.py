@@ -102,14 +102,18 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
     context      = task.get("context", "")
     phase        = task.get("phase", "1")
     project      = task["project"]
+    defers_to    = task.get("defers_to", [])
     phase_padded = str(phase).zfill(3)
 
     prompt = (
         f"Task: {tid}\n"
         f"Description: {desc}\n"
         f"Phase: {phase}\n"
-        f"Project: {project}\n\n"
+        f"Project: {project}\n"
     )
+    if defers_to:
+        prompt += f"Defers to: {', '.join(defers_to)}\n"
+    prompt += "\n"
 
     if context:
         prompt += f"Context:\n{context}\n\n"
@@ -135,6 +139,24 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
         f"   files, and the actual definitions of any types this task will\n"
         f"   consume or produce. See agents/forge-plan.md for the full\n"
         f"   inspection checklist.\n"
+    )
+
+    if defers_to:
+        prompt += (
+            f"3a. This task's defers_to field names {', '.join(defers_to)} as the\n"
+            f"   task(s) that deliver the scope this task is not implementing.\n"
+            f"   The Forge has already confirmed at startup that these tasks exist\n"
+            f"   and are downstream of {tid} — do not re-check that. Read each named\n"
+            f"   task's own description/context in .forge/tasks/tasks_phase*.json\n"
+            f"   and confirm, in good faith, that it genuinely states the deferred\n"
+            f"   functionality as part of its own deliverable. If it does not: you\n"
+            f"   cannot edit the task graph to fix this. Write a blocker under\n"
+            f"   ## Blockers describing the mismatch, set Status=BLOCKED, and STOP.\n"
+            f"   See FORGE_AGENT_RULES.md §4.7 and agents/forge-plan.md, 'Quality\n"
+            f"   Standards for the Out of Scope Section'.\n"
+        )
+
+    prompt += (
         f"4. For every external crate or package this task introduces or\n"
         f"   references by name: query the appropriate MCP tool to resolve\n"
         f"   the current version AND confirm the API shape (type names,\n"
@@ -179,16 +201,42 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
     agent for this session. The prompt enforces the step sequence and the
     critical version floor rule only.
     """
-    tid     = task["id"]
-    desc    = task["description"]
-    phase   = task.get("phase", "1")
-    project = task["project"]
+    tid       = task["id"]
+    desc      = task["description"]
+    phase     = task.get("phase", "1")
+    project   = task["project"]
+    defers_to = task.get("defers_to", [])
 
-    return (
+    header = (
         f"Task: {tid}\n"
         f"Description: {desc}\n"
         f"Phase: {phase}\n"
-        f"Project: {project}\n\n"
+        f"Project: {project}\n"
+    )
+    if defers_to:
+        header += f"Defers to: {', '.join(defers_to)}\n"
+    header += "\n"
+
+    implement_step = (
+        f"3. IMPLEMENT: Write all source code, tests, and CI changes as specified\n"
+        f"   in the approved plan. Scope is strictly limited to the plan's\n"
+        f"   In Scope section. Follow the inline documentation, logging, error\n"
+        f"   handling, and test isolation standards in agents/forge-act.md.\n"
+    )
+    defers_to_step = ""
+    if defers_to:
+        defers_to_step = (
+            f"3b. DEFERS_TO MARKER (part of step 3's IMPLEMENT standards — see\n"
+            f"   agents/forge-act.md): this task's defers_to field names\n"
+            f"   {', '.join(defers_to)}. Every stub or mock implementation you write\n"
+            f"   that corresponds to one of these MUST carry a comment at the exact\n"
+            f"   stub site: // defers_to: <TASK_ID> — <short reason> (or the\n"
+            f"   language's comment syntax). Use the same TASK_ID as listed above.\n"
+            f"   See FORGE_AGENT_RULES.md §9.7. Do not write the stub without it.\n"
+        )
+
+    return (
+        header +
         f"The plan below has been APPROVED by the project owner.\n"
         f"Proceed directly to implementation. Do not re-plan.\n\n"
         f"APPROVED PLAN:\n{approved_plan}\n\n"
@@ -215,10 +263,7 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"   of any types you will call or return. See agents/forge-act.md for\n"
         f"   the full inspection checklist and the three defect categories this\n"
         f"   prevents.\n"
-        f"3. IMPLEMENT: Write all source code, tests, and CI changes as specified\n"
-        f"   in the approved plan. Scope is strictly limited to the plan's\n"
-        f"   In Scope section. Follow the inline documentation, logging, error\n"
-        f"   handling, and test isolation standards in agents/forge-act.md.\n"
+        f"{implement_step}"
         f"3a. TESTS.MD: Immediately after writing test files, update docs/TESTS.md\n"
         f"   with one entry per new or modified test using the format defined in\n"
         f"   ANVILML_DESIGN.md §16.1. Use the plan's Tests table as the starting\n"
@@ -227,6 +272,7 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"   exist, create it with entries for this task's tests only. Do not\n"
         f"   defer this step — context is available now and will not be later.\n"
         f"   See FORGE_AGENT_RULES.md §5.10.\n"
+        f"{defers_to_step}"
         f"4. COMPILE CHECK: Run a fast compile check before the full test suite:\n"
         f"   cargo check --workspace --features mock-hardware   (Rust)\n"
         f"   python -m py_compile <new_files>                   (Python)\n"

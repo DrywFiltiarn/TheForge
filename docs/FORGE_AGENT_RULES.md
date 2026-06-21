@@ -79,6 +79,7 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 4.4 | Do not modify unrelated tests. Do not delete tests. |
 | 4.5 | If a prerequisite task's output is missing or incomplete, STOP. Write the blocker under `## Blockers` in the report. Do not attempt to compensate. |
 | 4.6 | **Refactor tasks** — tagged `refactor` make zero observable behaviour changes: no new or removed `pub` items, no changed error message text, no changed log output (except adding mandatory §11.5 log points). If a refactor task discovers it must change a public interface to proceed, write a blocker and STOP. Before writing the report, run `grep -n "^pub " <modified_files>` and confirm no public signature changed. Record the grep output in `## Deviations from Plan`. |
+| 4.7 | **`defers_to` coverage verification (PLAN sessions).** `docs/FORGE_TASK_AUTHORING_SPEC.md §5`/`§12a` already guarantees, at startup, that every `defers_to` entry on the current task names a task that exists and is genuinely downstream in the prereq graph — the agent does not need to re-check existence or positioning; The Forge would have refused to start otherwise. What startup validation cannot check is whether the named task's own `description`/`context` actually claims the deferred scope. Before relying on a `defers_to` entry while planning — i.e. before writing the plan's `## Approach` or `## Out of Scope` as if that scope is someone else's problem — the agent MUST read the named task and confirm, in good faith and without filling in unstated intent, that it genuinely states the deferred functionality as part of its own deliverable. The agent has no authority to create, edit, or repair `tasks_phase<NNN>.json` or `TASKS_PHASE<NNN>.md` (§1, §10) — it cannot author a corrected `defers_to` target even if it wanted to. So if the named task does not genuinely cover the scope: the agent cannot self-fix the task graph. Write a blocker under `## Blockers` describing exactly what `defers_to` claims versus what the target task actually states, set `Status=BLOCKED`, and STOP — this is the same handling as a missing prerequisite (§4.5) or a pre-existing error outside the task's files (§9.4), for the same reason: the cause is outside this session's authority to fix. |
 
 ---
 
@@ -190,6 +191,61 @@ The exact required sections for each report type are defined in §16 and §17 be
 | 9.4 | **Pre-existing errors** in files this task does not otherwise touch are blockers: document under `## Blockers` and STOP. If the error is in a file this task already modifies, fix it as part of the normal test-fix loop (rule 9.2) and note it under `## Deviations from Plan`. |
 | 9.5 | **Test failures that pass on retry** must be diagnosed before proceeding — never accepted as flakiness without investigation. (a) Parallelism-induced failures (database locked, port conflict, shared temp file) are deterministic isolation defects, not flakiness. Fix the isolation. `#[serial]` or `--test-threads=1` is only permitted when the shared resource is physically singular; if used, justify it in `## Deviations from Plan`. (b) True flakiness (timing, network) must be documented with root cause identified; the final recorded run must show 0 failures. |
 | 9.6 | **Environment-variable test isolation** — any test that calls `std::env::set_var` or `os.environ[...] =` MUST: (1) capture the pre-existing value before mutating; (2) restore every variable unconditionally as the last step of the test body, outside any conditional or assertion block; (3) be fully self-contained — never rely on env state from a prior test; (4) be annotated `#[serial]` (Rust) or placed in a serial pytest group (Python) — capture-and-restore alone does not prevent concurrent test threads from observing the mutated value mid-flight, because `std::env` is process-global and non-atomic. A test that mutates env vars without `#[serial]` is an isolation defect even if it restores correctly. See `docs/ENVIRONMENT.md §11.3` for the required pattern and the `serial_test` crate for the Rust annotation. |
+| 9.7 | **`defers_to` code comment marker (ACT sessions).** If the current task's `defers_to` field (`docs/FORGE_TASK_AUTHORING_SPEC.md §4`, `§12a`) is non-empty, every stub, mock implementation, or intentionally-incomplete code path that corresponds to a deferred entry MUST carry a comment at the stub site in the exact form `// defers_to: <TASK_ID> — <short reason>` (or the language's comment syntax, e.g. `# defers_to: <TASK_ID> — ...`), naming the same `<TASK_ID>` that appears in the task's JSON `defers_to` field. This is required even though the JSON field already records the link mechanically — the JSON is only visible to The Forge and to someone reading the task graph; the comment is what a future engineer reading the source file itself will see. A stub written without this comment, when the task's `defers_to` is non-empty, is incomplete — add the comment before writing the implementation report. This is the only point where The Forge's defer tracking and the actual codebase are required to agree in the same artifact a human reads. |
+
+---
+
+## 9a. End-of-Phase Deliverable Audit
+
+Before the PLAN session for a phase's final/integration task (the last task
+in the phase's `tasks_phase<NNN>.json`, or the task explicitly tagged as
+the phase's closing task in `TASKS_PHASE<NNN>.md`) may proceed, the agent
+MUST run this audit and resolve every finding.
+
+`docs/FORGE_TASK_AUTHORING_SPEC.md §5` already guarantees that every
+`defers_to` entry anywhere in the phase resolved to a real, downstream task
+at startup — that part needs no re-checking here. This audit re-checks the
+one thing startup validation cannot: whether each `defers_to` target's own
+wording, and the actual source tree, still genuinely match what was
+claimed when the phase was authored.
+
+**Procedure, run in order, for every task in the current phase whose
+`defers_to` field is non-empty:**
+
+1. For each such task `<TASK_ID>`, read its `defers_to` list from
+   `tasks_phase<NNN>.json`.
+2. For each target `<OWNER_ID>` in that list:
+   a. Confirm `<OWNER_ID>` is marked `completed` in `.forge/state/state.json`,
+      or is itself still pending with its own valid plan to deliver the
+      scope. If `<OWNER_ID>` is `completed`, read its implementation
+      report (`.forge/reports/<OWNER_ID>_implement.md`) and confirm the
+      deferred scope actually appears delivered there (in `## Files
+      Changed` or `## Public API Delta`) — not merely that the task ran.
+   b. Run, against `<TASK_ID>`'s own source files listed in its
+      implementation report's `## Files Changed`:
+      ```
+      grep -rn "defers_to: <OWNER_ID>" <those files>
+      ```
+      Confirm the §9.7 comment marker is present at the stub site and
+      names the same `<OWNER_ID>` recorded in the JSON `defers_to` field.
+      A mismatch (JSON says one task, code comment says another or is
+      absent) is a finding.
+3. For every finding from 2a or 2b — the owner doesn't deliver the scope,
+   or the code comment doesn't match the JSON — the phase is **not**
+   closed. This is the same situation `FORGE_AGENT_RULES.md §4.7` describes
+   for a PLAN session encountering a bad `defers_to` entry while planning:
+   the agent has no authority to repair `tasks_phase<NNN>.json`. Write a
+   blocker under `## Blockers` in the final/integration task's plan report
+   identifying exactly which `<TASK_ID>` → `<OWNER_ID>` link failed and
+   why, set `Status=BLOCKED`, and STOP. A human must author the missing
+   coverage or correct the task graph before the phase can close.
+4. If every `defers_to` entry in the phase passes both checks, record the
+   full `<TASK_ID>` → `<OWNER_ID>` list and a one-line confirmation per
+   entry in the final/integration task's plan report, under a
+   `## Phase Deliverable Audit` subsection of `## Approach`.
+
+A phase whose final/integration task is planned without this audit having
+been run and recorded is non-compliant with this section.
 
 ---
 

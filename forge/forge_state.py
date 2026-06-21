@@ -128,6 +128,103 @@ def build_dag(tasks: list[dict]) -> dict[str, dict]:
     return {t["id"]: t for t in tasks}
 
 
+def validate_task_graph(tasks: list[dict]) -> list[str]:
+    """
+    Validate whole-graph (cross-task) properties that a single-task schema
+    check cannot see: prereq references resolve to real tasks, the prereq
+    graph has no cycles, and every defers_to reference resolves to a real
+    task that is genuinely downstream of the deferring task.
+
+    Returns a list of error strings (empty = valid). Called once after all
+    tasks are loaded, in addition to per-task validate_task_schema.
+    """
+    errors: list[str] = []
+    by_id = {t["id"]: t for t in tasks if "id" in t}
+
+    # ── prereqs: every reference must resolve ──────────────────────────────
+    for t in tasks:
+        tid = t.get("id", "<missing>")
+        for p in t.get("prereqs", []):
+            if p not in by_id:
+                errors.append(f"prereq '{p}' in task '{tid}' does not exist")
+
+    # ── prereqs: no cycles ──────────────────────────────────────────────────
+    # Standard DFS cycle detection over the prereq graph (edge prereq -> task).
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour = {t["id"]: WHITE for t in tasks if "id" in t}
+    cycle_path: list[str] = []
+
+    def _visit(tid: str) -> bool:
+        colour[tid] = GREY
+        cycle_path.append(tid)
+        for p in by_id.get(tid, {}).get("prereqs", []):
+            if p not in by_id:
+                continue  # already reported above
+            if colour.get(p) == GREY:
+                cycle_path.append(p)
+                return True
+            if colour.get(p) == WHITE and _visit(p):
+                return True
+        cycle_path.pop()
+        colour[tid] = BLACK
+        return False
+
+    for tid in list(colour.keys()):
+        if colour[tid] == WHITE:
+            cycle_path.clear()
+            if _visit(tid):
+                errors.append(f"cycle detected involving tasks: {' -> '.join(cycle_path)}")
+                break  # one reported cycle is enough; fix and re-run
+
+    # ── defers_to: every reference must resolve, and must be downstream ────
+    def _descendants(start: str) -> set[str]:
+        """All task IDs reachable by following prereqs forward from `start`
+        (i.e. tasks that list `start`, directly or transitively, as a prereq)."""
+        forward: dict[str, list[str]] = {}
+        for t in tasks:
+            for p in t.get("prereqs", []):
+                forward.setdefault(p, []).append(t.get("id"))
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            for nxt in forward.get(cur, []):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return seen
+
+    for t in tasks:
+        tid = t.get("id", "<missing>")
+        defers = t.get("defers_to", [])
+        if not defers:
+            continue
+        descendants = None  # computed lazily, only if defers_to is non-empty
+        for target in defers:
+            if target not in by_id:
+                errors.append(
+                    f"defers_to target '{target}' in task '{tid}' does not exist"
+                )
+                continue
+            if target == tid:
+                errors.append(
+                    f"task '{tid}' lists itself in defers_to — a task cannot "
+                    f"defer to itself"
+                )
+                continue
+            if descendants is None:
+                descendants = _descendants(tid)
+            if target not in descendants:
+                errors.append(
+                    f"defers_to target '{target}' in task '{tid}' is not "
+                    f"downstream of '{tid}' in the prereq graph — a deferral "
+                    f"target must be reachable by following prereqs forward "
+                    f"from the deferring task"
+                )
+
+    return errors
+
+
 def validate_task_schema(task: dict) -> list[str]:
     """
     Validate a task dict against the required schema.
@@ -204,4 +301,7 @@ def print_dag_status(tasks: list[dict], state: dict) -> None:
             status = "▶ unblocked" if prereqs.issubset(completed) else "⏸  blocked"
         proj = task.get("project", "?")
         print(f"{tid:<12} {status:<14} {proj:<12} {task['description']}")
+        defers = task.get("defers_to", [])
+        if defers:
+            print(f"{'':<12} {'':<14} {'':<12} ⤷ defers to: {', '.join(defers)}")
     print()

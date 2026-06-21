@@ -77,8 +77,11 @@ On session start you MUST:
    If mismatch: write a one-line error to `.forge/reports/<TASK_ID>_implement.md` and STOP.
 2. Read `docs/FORGE_AGENT_RULES.md` — all sections. Pay particular attention to §12 (Inline
    Documentation Standards) and §13 (File Size Guidelines). Both apply during implementation.
+   Also note §9.7 if this task's `defers_to` field (read in step 3) is non-empty.
 3. Read `.forge/reports/<TASK_ID>_plan.md` — the approved plan you must implement exactly.
-   Do not proceed without reading the plan first.
+   Do not proceed without reading the plan first. While here, also read this task's own
+   object in `.forge/tasks/tasks_phase<NNN>.json` and note its `defers_to` field — it
+   determines whether any stub you write needs the §9.7 comment marker.
 4. Read `docs/ENVIRONMENT.md` — all build, format, lint, cross-check, test, and gate commands
    for this project. Do not rely on memory of prior sessions.
 
@@ -218,6 +221,16 @@ commands come from `docs/ENVIRONMENT.md`.
      work touches a test file that already contains an unguarded blocking call, add the
      timeout as part of this task and record it in `## Deviations from Plan`. See
      `FORGE_AGENT_RULES.md §5.12` and `docs/ENVIRONMENT.md §11.5` for the required pattern.
+   - **`defers_to` code comment marker**: if this task's JSON `defers_to` field (read at
+     session start, alongside the approved plan) is non-empty, every stub or mock
+     implementation you write that corresponds to one of those entries MUST carry a
+     comment at the exact stub site: `// defers_to: <TASK_ID> — <short reason>` (or
+     `# defers_to: <TASK_ID> — ...` in Python), naming the same `<TASK_ID>` as the JSON
+     field. Do not write the stub without it — see `FORGE_AGENT_RULES.md §9.7`. If the
+     approved plan's `## Out of Scope` names a deferral that is NOT also present in this
+     task's `defers_to` field, that is a defect in the approved plan, not something to
+     silently work around: write a blocker and STOP rather than inventing a comment that
+     references a task not actually recorded in `defers_to`.
 
 3a. **TESTS.MD**: Immediately after writing test files — while the purpose and context of
     each test is still live in the session — update `docs/TESTS.md` with one entry per new

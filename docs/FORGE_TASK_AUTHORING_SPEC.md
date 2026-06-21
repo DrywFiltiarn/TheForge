@@ -93,11 +93,15 @@ The array is ordered. The Forge respects the order when multiple tasks are simul
   "project":     "<project_name>",
   "prereqs":     ["<TASK_ID>", ...],
   "context":     "<implementation context>",
-  "tags":        ["<tag>", ...]
+  "tags":        ["<tag>", ...],
+  "defers_to":   ["<TASK_ID>", ...]
 }
 ```
 
-All six fields are required. No additional fields are permitted. The Forge rejects tasks with unknown fields (to catch the deprecated `repos` field and similar mistakes).
+The first six fields are required. `defers_to` is optional — omit it, or set it to
+`[]`, when this task defers no scope to a later task. No other additional fields
+are permitted. The Forge rejects tasks with unknown fields (to catch the
+deprecated `repos` field and similar mistakes).
 
 ---
 
@@ -207,9 +211,44 @@ Optional hints to The Forge and the model about the nature of the task. Use an e
 
 ---
 
+### `defers_to` — array of strings, optional
+
+Task IDs that will deliver functionality this task is intentionally not
+implementing. Use this field — never a bare comment in `context` or prose
+under a plan's `## Out of Scope` section — any time a task's `description`
+or `context` would otherwise leave named functionality unimplemented with
+the expectation that something else covers it. Omit the field, or set it
+to `[]`, when the task defers nothing.
+
+**This field exists because the alternative — a free-text deferral
+mentioned only in prose — is exactly the defect this field prevents.** A
+prose deferral can name a task that doesn't exist, name the wrong task, or
+name itself, and nothing will catch it until a human notices much later
+(see the worked incident in [§12a](#12a-the-defers_to-field-why-it-exists)).
+`defers_to` is mechanical: The Forge validates every entry at startup,
+before any agent session runs.
+
+**Rules:**
+- Every ID listed must exist in the project's task files (any phase file) — checked automatically at startup, same as `prereqs`.
+- Every ID listed must be genuinely downstream of this task — reachable by following `prereqs` forward from this task — checked automatically at startup. A same-subsystem task with no dependency relationship to this task does not satisfy this rule even if it sounds related.
+- A task must not list itself.
+- This field declares *where* the scope is going, not *that* it is safe to defer. The author is still responsible for confirming, by reading the target task's actual `description` and `context`, that it genuinely claims the deferred scope — see [§12a](#12a-the-defers_to-field-why-it-exists) for the authoring procedure this requires.
+- If no task exists yet that can receive the deferral, do not invent one to satisfy this field. Either author that task now (with its own ID, correct `prereqs`, and a `context` that genuinely states the scope) before referencing it, or fold the scope into this task instead.
+
+**What `defers_to` validates and what it cannot:** the startup check in
+§5 below confirms the target exists and is structurally downstream — both
+syntactic, mechanical facts. It cannot confirm the target's own wording
+actually covers the deferred scope; that is a semantic judgment only the
+author (at authoring time) or an OpenCode agent re-checking the claim
+(at execution time, per `FORGE_AGENT_RULES.md §4.7`) can make.
+
+---
+
 ## 5. Task JSON — Validation Rules
 
-The Forge runs these checks at startup and aborts if any fail. An LLM generating tasks must satisfy all of them.
+The Forge runs these checks at startup (`validate_task_schema` per task, then
+`validate_task_graph` once over the full set) and aborts if any fail. An LLM
+or human generating tasks must satisfy all of them before The Forge will run.
 
 | Rule | Error message |
 |------|---------------|
@@ -219,9 +258,28 @@ The Forge runs these checks at startup and aborts if any fail. An LLM generating
 | `project` is registered in `repos.json` | `project '<name>' is not registered in repos.json` |
 | `"repos"` field is absent | `field 'repos' is no longer supported. Rename it to 'project'` |
 | Every `prereqs` entry exists as a task ID | `prereq '<id>' in task '<id>' does not exist` |
-| The DAG has no cycles | `cycle detected involving tasks: <list>` |
+| The prereq graph has no cycles | `cycle detected involving tasks: <list>` |
 | `description` is non-empty | `field 'description' must be a non-empty string` |
 | `context` is non-empty | `field 'context' must be a non-empty string` |
+| Every `defers_to` entry exists as a task ID | `defers_to target '<id>' in task '<id>' does not exist` |
+| A task does not list itself in `defers_to` | `task '<id>' lists itself in defers_to — a task cannot defer to itself` |
+| Every `defers_to` entry is downstream of the deferring task in the prereq graph | `defers_to target '<id>' in task '<id>' is not downstream of '<id>' in the prereq graph` |
+
+**What this table validates, and what it cannot.** Every row above is a
+syntactic or structural property of the task graph — field presence, ID
+existence, graph shape — and is fully automated: `forge.py` checks it at
+startup and on every hot-reload of the task files, before any OpenCode
+session runs. **No row checks whether a `defers_to` target's own wording
+actually claims the deferred scope.** That is a semantic judgment about
+what a task's `description`/`context` text means, not a property a
+startup-time check can verify. Confirming it is a mandatory **manual**
+obligation at two points: the task author, before writing `defers_to`
+(see [§12a](#12a-the-defers_to-field-why-it-exists)), and the OpenCode
+PLAN agent, before relying on an existing `defers_to` entry while planning
+a task that reads one (`FORGE_AGENT_RULES.md §4.7`). Do not treat the
+presence of these rows as license to skip that manual check — a
+`defers_to` entry that passes every rule in this table can still be a lie
+if the target task's content does not actually cover the scope.
 
 ---
 
@@ -563,6 +621,7 @@ These rules prevent tasks from becoming too large for a single OpenCode session,
 - The `context` field exceeds 1000 characters even after removing redundancy
 - The task requires reading more than 3 external reference documents
 - The task touches more than one logical subsystem (e.g. both scheduler and server)
+- The task description names more than one independent real-path concern (e.g. "assemble the pipeline, then handle the callback shape, then invoke the sampler, with cancellation") — each named concern is a separate place a future implementer can silently mock-and-defer one of them while appearing to complete the task; this trigger applies regardless of character count or whether `context` otherwise fits within bounds. A task this shape is also the most common source of an unverified `defers_to` (§12a) — splitting it along its independent concerns usually removes the need to defer anything at all.
 - The task cannot complete within a 120-minute OpenCode ACT session (use context window §65% threshold in `FORGE_AGENT_RULES.md §7` as a proxy: if the plan calls for more than ~6 major file operations, split)
 
 **Remedy:** Split the task. Prefer splitting along data structure vs behaviour lines (types first, then logic that uses them), or along "create stub" vs "implement" lines.
@@ -673,6 +732,91 @@ incompatibility with <affected_file_or_type>. Migrate to <new_version>: ..."
   ...
 }
 ```
+
+---
+
+## 12a. The `defers_to` field — why it exists, and the authoring procedure it requires
+
+### The incident this prevents
+
+A prior phase shipped seven "real path" stubs where the real implementation
+was deferred in one of three ways, all expressed only as prose in `context`
+or a bare code comment, none of them checked by anything:
+
+1. **Self-reference** — a task deferred to its own ID, impossible to fulfil
+   once that task completes.
+2. **Wrong reference** — deferred to a real task ID that exists but never
+   actually touches the relevant file.
+3. **No reference** — a `# TODO: implement real path` comment with no task
+   ID at all.
+
+None of these were caught until a human happened to read the stub code long
+after the phase was marked complete. `defers_to` exists to make this class
+of defect structurally impossible to ship unnoticed: it turns "I am
+deferring this to something" from a sentence buried in prose into a field
+The Forge checks the same way it already checks `prereqs`.
+
+### `defers_to` is the only legitimate deferral mechanism
+
+If a task's scope excludes functionality that some other task is expected
+to deliver, that exclusion is recorded **only** via the `defers_to` field
+(§4) — never as a bare prose statement in `context`, never as a `## Out of
+Scope` bullet with no corresponding field entry, never as a code comment
+with no JSON counterpart. A deferral that exists only in prose is, by
+definition, the unvalidated form of exactly the defect described above —
+it doesn't matter how carefully the prose is worded.
+
+### The authoring procedure (generalizes the retrofit-leaf pattern above)
+
+The retrofit-leaf pattern above already establishes the right discipline
+for one specific case (a semver-blocker retrofit): the deferring task names
+its target explicitly, and the target's own `context` is written to
+genuinely receive that scope. `defers_to` generalizes this to every
+deferral, with the link made structural rather than rhetorical:
+
+1. **Before adding a `<TASK_ID>` to `defers_to`,** the author (human or LLM,
+   per §14) must verify it the same way §4's `defers_to` rules require:
+   the target must already exist in the task set being authored, must be
+   genuinely downstream in the `prereqs` graph, and its own `description`/
+   `context` must already state the deferred functionality as something it
+   delivers. If no such task exists yet, **author it now**, in the same
+   authoring pass — give it a real ID, correct `prereqs` placing it
+   downstream, and a `context` that genuinely claims the scope — then
+   reference it. Never write a `defers_to` entry pointing at a task that
+   doesn't yet claim the scope, on the assumption that it will be patched
+   up later.
+2. **Symmetric documentation.** Per the retrofit-leaf precedent, the link
+   should be recoverable from either end. The deferring task's `context`
+   should name what is being deferred and why, even though the formal
+   pointer lives in `defers_to`, not in that prose. The receiving task's
+   `context` does not need to repeat the deferring task's ID (the JSON
+   `defers_to` field already encodes that direction), but if the receiving
+   task was authored specifically to receive this deferral, say so — the
+   same way the retrofit-leaf example opens with its origin reference.
+3. **Code-level marker — mandatory, carried through to ACT.** Every stub
+   site that corresponds to a `defers_to` entry must, when implemented,
+   carry a comment in the exact form:
+   ```
+   // defers_to: <TASK_ID> — <short reason>
+   ```
+   (or the language's comment syntax, e.g. `# defers_to: <TASK_ID> — ...`
+   in Python). This is not optional documentation — it is how the link
+   between `defers_to` (a JSON-only fact) and the actual stub in the
+   source tree survives into the codebase, where a future engineer reading
+   the file (not the task graph) can find it. See
+   `FORGE_AGENT_RULES.md §9.7` for the ACT-session obligation that
+   enforces this, and `FORGE_AGENT_RULES.md §9a` for how it is re-checked
+   at phase close.
+
+### What `defers_to` does not grant
+
+`defers_to` records where scope is going; it does not grant permission to
+skip verifying that the destination is real and correct. An entry that
+satisfies every automated check in §5 (target exists, is downstream, no
+self-reference) can still be invalid if the target's own wording does not
+actually cover the deferred scope — that check has no mechanical
+substitute and remains the author's and the PLAN agent's responsibility
+(`FORGE_AGENT_RULES.md §4.7`).
 
 ---
 
