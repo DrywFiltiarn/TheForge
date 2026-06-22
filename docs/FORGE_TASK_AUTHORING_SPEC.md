@@ -362,7 +362,7 @@ Examples: `TASKS_PHASE001.md`, `TASKS_PHASE012.md`, `TASKS_PHASE099.md`
 
 ## 8. TASKS_PHASE Document — Format Specification
 
-```markdown
+````markdown
 # Tasks: Phase <NNN> — <Phase Name>
 
 **Phase:** <NNN>
@@ -480,6 +480,7 @@ curl -s <endpoint> | python3 -c "import sys,json; d=json.load(sys.stdin); assert
 # -> <expected observable result>
 kill %1
 ```
+````
 
 ---
 
@@ -506,6 +507,7 @@ instead of a disguised test invocation.
 
 ---
 
+```markdown
 ## Known Constraints and Gotchas
 
 <Anything that is not obvious from reading the task descriptions and would
@@ -796,9 +798,11 @@ deferral, with the link made structural rather than rhetorical:
 3. **Code-level marker — mandatory, carried through to ACT.** Every stub
    site that corresponds to a `defers_to` entry must, when implemented,
    carry a comment in the exact form:
+
    ```
    // defers_to: <TASK_ID> — <short reason>
    ```
+
    (or the language's comment syntax, e.g. `# defers_to: <TASK_ID> — ...`
    in Python). This is not optional documentation — it is how the link
    between `defers_to` (a JSON-only fact) and the actual stub in the
@@ -983,7 +987,7 @@ The following is a minimal but complete example of two tasks in a hypothetical P
 
 ### Corresponding TASKS_PHASE003.md section
 
-```markdown
+````markdown
 # Tasks: Phase 3 — AnvilML Scheduler
 
 **Phase:** 3
@@ -1079,7 +1083,7 @@ exits 0 with >=6 tests.
 
 ## Phase Acceptance Criteria
 
-\`\`\`
+```
 cargo test -p anvilml-scheduler --features mock-hardware
 cargo clippy -p anvilml-scheduler --features mock-hardware -- -D warnings
 # Runnable Proof (manual): a submitted job is dispatched and reaches Running
@@ -1090,7 +1094,7 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
 # -> 200 with status Queued or Running (dispatch loop picked it up)
 kill %1
-\`\`\`
+```
 
 ---
 
@@ -1100,20 +1104,20 @@ kill %1
   because it is held across await points when communicating with workers.
 - Tests that spawn workers must pass `--features mock-hardware` or they will
   attempt real GPU detection and fail in CI.
-```
+````
 
 ### Corresponding docs/RUNNABLE_PROOF.md entry
 
 This is Output 3 alongside the JSON and the TASKS_PHASE doc above — the same
 Runnable Proof block, without the standard `cargo test`/`clippy` lines:
 
-```markdown
+````markdown
 ## Phase 3 — AnvilML Scheduler
 
 Capability: jobs submitted via `POST /v1/jobs` are queued and dispatched to a
 worker.
 
-\`\`\`bash
+```bash
 cargo run --features mock-hardware &
 sleep 5
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \\
@@ -1121,8 +1125,8 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
 # -> 200 with status Queued or Running (dispatch loop picked it up)
 kill %1
-\`\`\`
 ```
+````
 
 ---
 
