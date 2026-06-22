@@ -418,7 +418,9 @@ state the document and the specific sections or types that apply.>
 <One subsection per group. For each task: the full task ID, a plain-English
 description of what to implement and why, the files to create or modify, and
 the acceptance criterion. This is the narrative that OpenCode reads alongside
-the context field in tasks_phase<NNN>.json.>
+the context field in tasks_phase<NNN>.json. The four fields below are all
+mandatory — see §9 "Task Descriptions" for the per-field minimum content
+rules that this template's bracketed hints summarise.>
 
 ### Group A — <Subsystem Name>
 
@@ -556,7 +558,14 @@ A table. The `Contract document` column names the file (relative to `docs/`). Th
 
 One H3 subsection per group letter. Within each group, one H4 subsection per task. Every task in `tasks_phase<NNN>.json` for this phase must appear here; every task described here must appear in `tasks_phase<NNN>.json`.
 
-The **Acceptance criterion** line must be a runnable shell command or sequence. Vague criteria like "works correctly" or "looks good" are not permitted.
+Each task's H4 subsection must contain exactly the four fields templated in §8 — **Goal**, **Files to create or modify**, **Key implementation notes**, **Acceptance criterion** — in that order, with no field omitted. The OpenCode PLAN agent (Qwen3 35B A3B) reads this section alongside the JSON `context` field at session start; `context` is capped at 1000 characters (§11) and deliberately omits rationale, so a missing or thin field here is not recoverable from the JSON side. Per-field minimum content:
+
+- **Goal:** 1–2 sentences. Must state what the task produces and why it is needed at this point in the phase — not a restatement of the task description string.
+- **Files to create or modify:** at least one path, relative to the project root, each with a trailing `—` clause naming what it contains or what changes. A bare path with no clause is insufficient.
+- **Key implementation notes:** at least one bullet. Each note must name a concrete struct, function, field, ordering constraint, or edge case the agent would otherwise have to guess — not a generic reminder (e.g. "write good tests" is not a valid note; "`would_fit` returns false if the device index is unknown" is).
+- **Acceptance criterion:** must be a runnable shell command or sequence. Vague criteria like "works correctly" or "looks good" are not permitted.
+
+A subsection missing any of the four fields, or containing a field that fails its minimum content rule above, is not valid and must be corrected before the phase is approved.
 
 ### Phase Acceptance Criteria — mandatory
 
