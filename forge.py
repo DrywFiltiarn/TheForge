@@ -62,6 +62,7 @@ from forge.forge_repos import load_repos, REPOS, resolve_project_path, ensure_on
 from forge.forge_state import (
     load_state, save_state, load_tasks,
     validate_task_schema, validate_task_graph, find_next_task, print_dag_status,
+    is_phase_closing_task,
     DEFAULT_STATE,
 )
 from forge.forge_git import revert_task_repo
@@ -288,6 +289,7 @@ def main() -> None:
                 reports_channel_id=reports_channel_id,
                 approvals_channel_id=approvals_channel_id,
                 dry_run=args.dry_run,
+                is_phase_closing=is_phase_closing_task(task, tasks),
             )
         except KeyboardInterrupt:
             log_warn("Interrupted by user — state saved, safe to resume")

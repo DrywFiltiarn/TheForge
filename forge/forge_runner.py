@@ -43,6 +43,7 @@ def execute_task(
     reports_channel_id: Optional[str],    # #forge-reports — broadcast only
     approvals_channel_id: Optional[str],  # #forge-approvals — approval polling
     dry_run: bool = False,
+    is_phase_closing: bool = False,
 ) -> bool:
     """
     Execute one atomic task through the full plan→approve→act→commit→push cycle.
@@ -54,6 +55,13 @@ def execute_task(
     Each task targets exactly one project (task["project"]).  The Forge resolves
     the project path from repos.json, verifies the branch, runs OpenCode in that
     repo's working directory, and writes reports into that repo's .forge/reports/.
+
+    is_phase_closing: True if `task` is the last task (by array order) in its
+    own phase — computed by the caller via forge_state.is_phase_closing_task(),
+    which needs the full task list and so cannot be recomputed here. Forwarded
+    to build_task_prompt() to trigger the FORGE_AGENT_RULES.md §9a/§9a.1
+    end-of-phase deliverable audit instruction. Defaults to False so existing
+    callers that have not been updated to compute it behave exactly as before.
 
     Returns True if task completed successfully.
     """
@@ -122,7 +130,7 @@ def execute_task(
 
         log(f"[{tid}] 📋 Plan phase (attempt {plan_attempt})")
 
-        prompt = build_task_prompt(task, feedback=feedback)
+        prompt = build_task_prompt(task, feedback=feedback, is_phase_closing=is_phase_closing)
 
         # Write CURRENT_TASK.md so OpenCode's §1 identity check passes
         if not dry_run:

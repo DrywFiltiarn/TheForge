@@ -80,6 +80,7 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 4.5 | If a prerequisite task's output is missing or incomplete, STOP. Write the blocker under `## Blockers` in the report. Do not attempt to compensate. |
 | 4.6 | **Refactor tasks** — tagged `refactor` make zero observable behaviour changes: no new or removed `pub` items, no changed error message text, no changed log output (except adding mandatory §11.5 log points). If a refactor task discovers it must change a public interface to proceed, write a blocker and STOP. Before writing the report, run `grep -n "^pub " <modified_files>` and confirm no public signature changed. Record the grep output in `## Deviations from Plan`. |
 | 4.7 | **`defers_to` coverage verification (PLAN sessions).** `docs/FORGE_TASK_AUTHORING_SPEC.md §5`/`§12a` already guarantees, at startup, that every `defers_to` entry on the current task names a task that exists and is genuinely downstream in the prereq graph — the agent does not need to re-check existence or positioning; The Forge would have refused to start otherwise. What startup validation cannot check is whether the named task's own `description`/`context` actually claims the deferred scope. Before relying on a `defers_to` entry while planning — i.e. before writing the plan's `## Approach` or `## Out of Scope` as if that scope is someone else's problem — the agent MUST read the named task and confirm, in good faith and without filling in unstated intent, that it genuinely states the deferred functionality as part of its own deliverable. The agent has no authority to create, edit, or repair `tasks_phase<NNN>.json` or `TASKS_PHASE<NNN>.md` (§1, §10) — it cannot author a corrected `defers_to` target even if it wanted to. So if the named task does not genuinely cover the scope: the agent cannot self-fix the task graph. Write a blocker under `## Blockers` describing exactly what `defers_to` claims versus what the target task actually states, set `Status=BLOCKED`, and STOP — this is the same handling as a missing prerequisite (§4.5) or a pre-existing error outside the task's files (§9.4), for the same reason: the cause is outside this session's authority to fix. |
+| 4.7a | **Empty `defers_to` forbids deferral outright (PLAN sessions) — this is the default case, not the exception.** Most tasks have an empty or absent `defers_to` field. When that is true for the current task, the agent MUST NOT write any `## Out of Scope` bullet that defers real, named functionality to another task, "a future phase", "ACT time", or any other session — there is no field backing such a bullet, so it is unvalidated prose of the exact shape §4.7/`FORGE_TASK_AUTHORING_SPEC.md §12a` exist to prevent. This rule applies even when the task's own `context` field contains language like "confirm X at ACT time" or "verify Y against the installed version" — that language is an instruction to perform the verification during implementation and then write the real implementation using the result; it is not a license to write a stub instead and treat the unconfirmed detail as a reason to skip the feature. The deciding question for an `## Out of Scope` bullet is never "did the task's prose leave room for this to be deferred" — it is "does this task's own JSON `defers_to` field, read at session start, name a target for this". If the answer is no, the functionality stays in scope. If the codebase inspection reveals the task genuinely cannot be completed without scope that belongs elsewhere — and the agent cannot create that elsewhere, having no write access to `tasks_phase<NNN>.json` — the correct action is `## Blockers` + `Status=BLOCKED` + STOP, identical to §4.5's handling of a missing prerequisite. A plan that stubs in-scope functionality and calls it `## Out of Scope` anyway, while `defers_to` is empty, is a non-compliant plan regardless of how the stub is justified in prose. |
 
 ---
 
@@ -192,6 +193,7 @@ The exact required sections for each report type are defined in §16 and §17 be
 | 9.5 | **Test failures that pass on retry** must be diagnosed before proceeding — never accepted as flakiness without investigation. (a) Parallelism-induced failures (database locked, port conflict, shared temp file) are deterministic isolation defects, not flakiness. Fix the isolation. `#[serial]` or `--test-threads=1` is only permitted when the shared resource is physically singular; if used, justify it in `## Deviations from Plan`. (b) True flakiness (timing, network) must be documented with root cause identified; the final recorded run must show 0 failures. |
 | 9.6 | **Environment-variable test isolation** — any test that calls `std::env::set_var` or `os.environ[...] =` MUST: (1) capture the pre-existing value before mutating; (2) restore every variable unconditionally as the last step of the test body, outside any conditional or assertion block; (3) be fully self-contained — never rely on env state from a prior test; (4) be annotated `#[serial]` (Rust) or placed in a serial pytest group (Python) — capture-and-restore alone does not prevent concurrent test threads from observing the mutated value mid-flight, because `std::env` is process-global and non-atomic. A test that mutates env vars without `#[serial]` is an isolation defect even if it restores correctly. See `docs/ENVIRONMENT.md §11.3` for the required pattern and the `serial_test` crate for the Rust annotation. |
 | 9.7 | **`defers_to` code comment marker (ACT sessions).** If the current task's `defers_to` field (`docs/FORGE_TASK_AUTHORING_SPEC.md §4`, `§12a`) is non-empty, every stub, mock implementation, or intentionally-incomplete code path that corresponds to a deferred entry MUST carry a comment at the stub site in the exact form `// defers_to: <TASK_ID> — <short reason>` (or the language's comment syntax, e.g. `# defers_to: <TASK_ID> — ...`), naming the same `<TASK_ID>` that appears in the task's JSON `defers_to` field. This is required even though the JSON field already records the link mechanically — the JSON is only visible to The Forge and to someone reading the task graph; the comment is what a future engineer reading the source file itself will see. A stub written without this comment, when the task's `defers_to` is non-empty, is incomplete — add the comment before writing the implementation report. This is the only point where The Forge's defer tracking and the actual codebase are required to agree in the same artifact a human reads. |
+| 9.7a | **Empty `defers_to` forbids stubbing in-scope functionality (ACT sessions) — applies whether or not the approved plan tried to defer it.** When the current task's `defers_to` field is empty or absent, no file this task touches may contain `NotImplementedError`, a `TODO` placeholder, or a mock-only return path standing in for functionality the task's own `context` or the approved plan's `## In Scope` describes. This holds even if the approved plan itself contains an `## Out of Scope` bullet purporting to defer that functionality — an approved plan is not a license to violate this rule; a plan that defers without `defers_to` backing is itself defective (§4.7a), and discovering that defect during ACT is not authorization to execute it anyway. Do not silently work around a defective plan by implementing it as written. Write `## Blockers` identifying the specific bullet and the fact that no corresponding `defers_to` entry exists, set `Status=BLOCKED`, and STOP — the agent has no authority to repair the plan report or the task graph, so surfacing the defect is the only correct action. Marking a task `Status=COMPLETE` while a stub for its own in-scope functionality remains, with no `defers_to` entry to justify it, is a session failure discovered after the fact has the same severity as one caught at the time: it must never happen, regardless of what the plan said. |
 
 ---
 
@@ -246,6 +248,44 @@ claimed when the phase was authored.
 
 A phase whose final/integration task is planned without this audit having
 been run and recorded is non-compliant with this section.
+
+### 9a.1 Unmarked-stub sweep (catches what the procedure above cannot)
+
+The procedure above only examines tasks whose `defers_to` field is
+non-empty. It cannot detect a task that left functionality unimplemented
+**without ever populating `defers_to`** — exactly the incident `§4.7a`/
+`§9.7a` and `FORGE_TASK_AUTHORING_SPEC.md §12a` exist to prevent. Because
+this incident has occurred before and is the documented motivation for
+those rules, this sweep is mandatory and mechanical, run in addition to
+the procedure above, not instead of it:
+
+1. Run, across every source file modified by any task in the current
+   phase (per each task's implementation report `## Files Changed`):
+   ```
+   grep -rn "NotImplementedError\|unimplemented!\|todo!\|# TODO\|// TODO" <those files>
+   ```
+2. For every match, identify which task's `## Files Changed` introduced
+   that line, then check that task's own `defers_to` field in
+   `tasks_phase<NNN>.json`.
+3. If `defers_to` is non-empty and the stub site carries the matching
+   `defers_to: <TASK_ID>` comment (§9.7), this match is accounted for —
+   it was already covered by the procedure above. No finding.
+4. If `defers_to` is empty or absent, **or** the stub site has no
+   `defers_to` comment naming an entry in that field, this is a finding
+   regardless of what the task's plan or implementation report claims in
+   prose. A prose justification ("deferred to a future phase", "stubbed
+   pending confirmation") is not a substitute for the field — that is the
+   literal defect this sweep exists to catch.
+5. Any finding from step 4 means the phase is **not** closed, for the same
+   reason as step 3 above: write a blocker in the final/integration task's
+   plan report naming the exact file, line, and originating `<TASK_ID>`,
+   set `Status=BLOCKED`, and STOP. A human must decide whether to author a
+   `defers_to`-backed task to receive the scope or revert the stub and
+   require the originating task to be redone in full.
+6. If the sweep finds nothing, record `"Unmarked-stub sweep: 0 findings"`
+   in the same `## Phase Deliverable Audit` subsection as the procedure
+   above, including the exact grep command run and its output (even if
+   empty) — not a prose claim that the sweep was performed.
 
 ---
 

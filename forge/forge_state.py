@@ -278,6 +278,27 @@ def find_next_task(tasks: list[dict], state: dict) -> Optional[dict]:
     return None
 
 
+def is_phase_closing_task(task: dict, tasks: list[dict]) -> bool:
+    """
+    Return True if `task` is the last task (by array order) belonging to
+    its own phase, among all loaded `tasks`.
+
+    Used to trigger the FORGE_AGENT_RULES.md §9a / §9a.1 end-of-phase
+    deliverable audit at the right moment — see build_task_prompt's
+    is_phase_closing parameter in forge_prompts.py. Defined purely by
+    array position within the task's own phase, not by a tag, so it
+    requires no task-authoring convention to get right: a phase's closing
+    task is whichever one a human or LLM author placed last when writing
+    tasks_phase<NNN>.json, the same ordering The Forge already respects
+    when picking among simultaneously-unblocked tasks (see load_tasks).
+    """
+    phase = task.get("phase")
+    same_phase = [t for t in tasks if t.get("phase") == phase]
+    if not same_phase:
+        return False
+    return same_phase[-1].get("id") == task.get("id")
+
+
 def print_dag_status(tasks: list[dict], state: dict) -> None:
     completed    = set(state["completed"])
     failed       = set(state["failed"])

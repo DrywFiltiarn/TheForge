@@ -80,6 +80,24 @@ On session start you MUST read the following files in order before writing any o
 
 Do not read any other files until steps 1–6 are complete.
 
+## Phase-Closing Task Check (run immediately after step 6 above)
+
+Check whether the current `<TASK_ID>` is the **last task in the current
+phase's `tasks_phase<NNN>.json`** (by array order), or is explicitly tagged
+as the phase's closing task in `docs/TASKS_PHASE<NNN>.md`. This is a simple
+positional/textual check — read the file, look at the position, no judgment
+required.
+
+If it is: before writing `## Approach`, you MUST run the full procedure in
+`docs/FORGE_AGENT_RULES.md §9a` **and** the unmarked-stub sweep in `§9a.1`.
+Record the results — including the exact grep commands run and their
+output — in a `## Phase Deliverable Audit` subsection of `## Approach`. A
+plan for a phase-closing task that skips this is non-compliant with §9a,
+regardless of how complete the rest of the plan is.
+
+If it is not the phase's closing task, skip this section and proceed
+normally — §9a does not apply to non-closing tasks.
+
 ## Codebase Inspection (mandatory before writing the plan)
 
 After reading the six documents above, read the existing source files relevant to this task
@@ -198,8 +216,11 @@ section has no applicable content, write "None." under the heading — never omi
 <bulleted list. If any bullet defers named functionality to another task, it
 MUST name that task's ID, and that ID MUST also appear in this task's JSON
 `defers_to` field — never write an Out of Scope bullet that names a deferral
-target not also present in `defers_to`. See "Quality Standards for the
-Out of Scope Section" below.>
+target not also present in `defers_to`. If this task's `defers_to` is empty
+or absent, this section MUST NOT defer any functionality at all — including
+functionality the task's own `context` says to "confirm" or "verify" "at
+ACT time" (that phrase means implement-after-verifying, not skip). See
+"Quality Standards for the Out of Scope Section" below.>
 
 ## Existing Codebase Assessment
 
@@ -306,14 +327,48 @@ downstream of this task. It cannot guarantee the target's wording actually
 covers the deferred scope — that is this agent's job, every time a `## Out
 of Scope` bullet defers something:
 
-**Every Out of Scope deferral must cite a `defers_to` entry.** If you find
-yourself writing "X is out of scope, handled by a later task" without a
-specific task ID, stop — that sentence is the unvalidated form of the
-exact defect `defers_to` exists to prevent (see `FORGE_TASK_AUTHORING_SPEC.md
-§12a` for the incident this generalizes from). Name the task ID, and
-confirm that ID is present in the JSON `defers_to` field you read for this
-task at session start — if it is not there, you cannot add it (you have no
-write access to `tasks_phase<NNN>.json`, per the Session Contract above).
+**Mechanical first step — do this before drafting any Out of Scope bullet.**
+Quote, verbatim, into a line near the top of your working notes for this
+section: the `defers_to` value from this task's own entry in
+`.forge/tasks/tasks_phase<NNN>.json` (the same file read at session start —
+see Task Identification above). Write it as you would write a fact you
+looked up, e.g. `defers_to: []` or `defers_to: ["P18-D18c"]` — not as a
+paraphrase, not as "this task defers to a later phase". This is a field
+read, not a judgment call, and it must happen before you write a single
+Out of Scope bullet, because every rule below depends on its value.
+
+**If the value is empty or the field is absent — these are the same
+thing (`docs/FORGE_TASK_AUTHORING_SPEC.md §3`): "omit it, or set it to
+`[]`").** This task may defer no scope whatsoever, full stop. Do **not**
+write any Out of Scope bullet of the shape "X is deferred to a later
+task", "X will be implemented at ACT time", "X is left as a stub for now",
+or any equivalent — regardless of how the task's own `context` field is
+phrased. **A `context` instruction to "confirm", "verify", or "resolve"
+some detail "at ACT time" is an instruction to do that verification during
+implementation and then implement the feature — it is never permission to
+stub the feature instead.** Treat any such phrase in `context` as part of
+the implementation work this task must complete, not as a license to
+defer it. If, after the codebase inspection, you believe this task
+genuinely cannot be completed without scope belonging to another task,
+that is not a deferral you are authorized to invent — you have no write
+access to `tasks_phase<NNN>.json` and cannot create the receiving task
+yourself (Session Contract above). Write `## Blockers` describing exactly
+what is missing and why this task cannot proceed without it, set
+`Status=BLOCKED`, and STOP. This is the same handling as a missing
+prerequisite (`FORGE_AGENT_RULES.md §4.5`) — the cause is outside this
+session's authority to fix, so the only correct action is to surface it,
+not to work around it with an unmarked stub. See
+`FORGE_AGENT_RULES.md §4.7a`.
+
+**If the value is non-empty: every Out of Scope deferral must cite a
+`defers_to` entry.** If you find yourself writing "X is out of scope,
+handled by a later task" without a specific task ID, stop — that sentence
+is the unvalidated form of the exact defect `defers_to` exists to prevent
+(see `FORGE_TASK_AUTHORING_SPEC.md §12a` for the incident this
+generalizes from). Name the task ID, and confirm that ID is present in
+the JSON `defers_to` field you read for this task at session start — if
+it is not there, you cannot add it (you have no write access to
+`tasks_phase<NNN>.json`, per the Session Contract above).
 
 **Verify coverage before trusting an existing `defers_to` entry.** Read
 the named task's `description` and `context` in the relevant

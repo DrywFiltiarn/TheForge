@@ -231,6 +231,21 @@ commands come from `docs/ENVIRONMENT.md`.
      task's `defers_to` field, that is a defect in the approved plan, not something to
      silently work around: write a blocker and STOP rather than inventing a comment that
      references a task not actually recorded in `defers_to`.
+   - **No deferral when `defers_to` is empty — the common case**: if this task's JSON
+     `defers_to` field is empty or absent (the default for most tasks), you may not
+     write `NotImplementedError`, a `TODO` stub, a mock-only return path, or any other
+     intentionally-incomplete code for functionality this task's own approved plan
+     describes as part of `## In Scope`. This applies even when the plan or the original
+     task `context` says to "confirm", "verify", or "resolve [some detail] at ACT time" —
+     that phrasing means: do the verification now, in this session, then write the real
+     implementation using what you confirmed. It is never permission to stub the feature
+     and call the task complete. If the approved plan itself contains an Out of Scope
+     bullet that defers real functionality without a matching `defers_to` entry, that is
+     a defect in the plan you are implementing, not something to execute faithfully —
+     write a blocker under `## Blockers` describing the mismatch (what the plan defers
+     vs. what `defers_to` actually contains), set `Status=BLOCKED`, and STOP. Do not
+     mark a task `COMPLETE` while a stub for its own in-scope functionality remains in
+     the diff with no corresponding `defers_to` entry. See `FORGE_AGENT_RULES.md §9.7a`.
 
 3a. **TESTS.MD**: Immediately after writing test files — while the purpose and context of
     each test is still live in the session — update `docs/TESTS.md` with one entry per new
@@ -408,6 +423,10 @@ can assess downstream impact. "None." if no deviations.>
 - Formatter breaks compilation after pass 3: document as blocker, set Status=BLOCKED, STOP
 - Plan's Public API Surface conflicts with existing codebase: resolve using existing codebase,
   document in Deviations, do not follow plan into a compile error
+- A stub, mock return, or `NotImplementedError` is the only way to finish this task's own
+  in-scope functionality, and `defers_to` is empty/absent: this is a blocker, not a deviation.
+  Set `Status=BLOCKED`, document the specific missing piece under `## Blockers`. Do not write
+  the stub and mark the task COMPLETE — see `FORGE_AGENT_RULES.md §9.7a`.
 
 ## Writing the Implementation Report
 

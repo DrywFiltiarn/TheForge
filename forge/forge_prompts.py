@@ -87,7 +87,11 @@ def _is_thinking_trace(report_text: str) -> bool:
 
 # ─── Prompt builders ──────────────────────────────────────────────────────────
 
-def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
+def build_task_prompt(
+    task: dict,
+    feedback: Optional[str] = None,
+    is_phase_closing: bool = False,
+) -> str:
     """
     Build the prompt injected into OpenCode for the PLAN session.
 
@@ -96,6 +100,14 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
     report section structure — lives in agents/forge-plan.md which OpenCode
     loads as the active agent for this session. The prompt enforces the
     read-order contract and the write-once constraint only.
+
+    is_phase_closing: True if this task is the last task (by array order)
+    in its phase's tasks_phase<NNN>.json, or is tagged as the phase's
+    closing task. Computed by the caller, which has the full task list in
+    scope — see forge.py / forge_state.py is_phase_closing_task(). When
+    True, the prompt injects an explicit instruction to run the
+    FORGE_AGENT_RULES.md §9a / §9a.1 audit, rather than relying on the
+    agent to notice its own position in the phase from prose alone.
     """
     tid          = task["id"]
     desc         = task["description"]
@@ -113,6 +125,11 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
     )
     if defers_to:
         prompt += f"Defers to: {', '.join(defers_to)}\n"
+    else:
+        # Stated unconditionally, not left to be inferred from an absent field —
+        # see docs/FORGE_AGENT_RULES.md §4.7a. A model that never reads this line
+        # has no other guaranteed-attention signal that deferral is forbidden here.
+        prompt += "Defers to: NONE — this task may not defer any scope. Implement it in full.\n"
     prompt += "\n"
 
     if context:
@@ -154,6 +171,38 @@ def build_task_prompt(task: dict, feedback: Optional[str] = None) -> str:
             f"   ## Blockers describing the mismatch, set Status=BLOCKED, and STOP.\n"
             f"   See FORGE_AGENT_RULES.md §4.7 and agents/forge-plan.md, 'Quality\n"
             f"   Standards for the Out of Scope Section'.\n"
+        )
+    else:
+        prompt += (
+            f"3a. Defers to: NONE (see header above). This task must implement its\n"
+            f"   full scope, including any part the task context describes as\n"
+            f"   needing confirmation, verification, or research \"at ACT time\" —\n"
+            f"   that phrase means resolve-then-implement, not skip-and-stub. Before\n"
+            f"   writing ## Scope, run:\n"
+            f"     grep -A8 '\"id\": \"{tid}\"' .forge/tasks/tasks_phase{phase_padded}.json\n"
+            f"   and copy the literal defers_to value you see into the plan's\n"
+            f"   ## Approach section as: 'defers_to (from JSON): []' or 'absent'.\n"
+            f"   If that value is empty or absent, the ## Out of Scope section MUST\n"
+            f"   NOT contain any bullet that defers real functionality to another\n"
+            f"   task, to \"a future phase\", to \"ACT time\", or to any other session.\n"
+            f"   A stub, mock, or NotImplementedError for this task's own described\n"
+            f"   functionality is not permitted under an empty defers_to — implement\n"
+            f"   it, or set Status=BLOCKED and write the specific blocking reason\n"
+            f"   under ## Blockers. See FORGE_AGENT_RULES.md §4.7a.\n"
+        )
+
+    if is_phase_closing:
+        prompt += (
+            f"3b. PHASE-CLOSING TASK: {tid} is the last task in this phase's\n"
+            f"   tasks_phase{phase_padded}.json (or is tagged as the phase's closing\n"
+            f"   task). Before writing ## Approach, you MUST run the full audit in\n"
+            f"   docs/FORGE_AGENT_RULES.md §9a AND the unmarked-stub sweep in §9a.1\n"
+            f"   across every task in this phase. Record the grep commands and their\n"
+            f"   verbatim output (including '0 findings' if none) in a\n"
+            f"   ## Phase Deliverable Audit subsection of ## Approach. Skipping this\n"
+            f"   because the phase 'looks done' is exactly the failure §9a/§9a.1 were\n"
+            f"   added to prevent — run the greps, do not reason about whether they\n"
+            f"   are needed.\n"
         )
 
     prompt += (
@@ -215,6 +264,10 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
     )
     if defers_to:
         header += f"Defers to: {', '.join(defers_to)}\n"
+    else:
+        # Same guaranteed-attention rationale as build_task_prompt — see
+        # docs/FORGE_AGENT_RULES.md §9.7a.
+        header += "Defers to: NONE — no stub in this task may cite a deferral.\n"
     header += "\n"
 
     implement_step = (
@@ -233,6 +286,21 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
             f"   stub site: // defers_to: <TASK_ID> — <short reason> (or the\n"
             f"   language's comment syntax). Use the same TASK_ID as listed above.\n"
             f"   See FORGE_AGENT_RULES.md §9.7. Do not write the stub without it.\n"
+        )
+    else:
+        defers_to_step = (
+            f"3b. NO DEFERRAL PERMITTED (part of step 3's IMPLEMENT standards): this\n"
+            f"   task's defers_to field is empty (see header above). You may not\n"
+            f"   write NotImplementedError, a TODO stub, a mock-only return, or any\n"
+            f"   other incomplete code path for functionality this task's own\n"
+            f"   context/plan describes — including anything the plan says to\n"
+            f"   \"confirm\", \"verify\", or \"resolve at ACT time\": that phrasing means\n"
+            f"   do the verification now and then implement, not skip it. If you\n"
+            f"   reach a point where the described functionality genuinely cannot\n"
+            f"   be completed (missing prerequisite, absent external API, contract\n"
+            f"   conflict), that is a blocker: set Status=BLOCKED and document the\n"
+            f"   specific cause under ## Blockers — do not silently stub instead.\n"
+            f"   See FORGE_AGENT_RULES.md §9.7a.\n"
         )
 
     return (
