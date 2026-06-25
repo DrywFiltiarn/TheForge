@@ -89,11 +89,13 @@ positional/textual check — read the file, look at the position, no judgment
 required.
 
 If it is: before writing `## Approach`, you MUST run the full procedure in
-`docs/FORGE_AGENT_RULES.md §9a` **and** the unmarked-stub sweep in `§9a.1`.
-Record the results — including the exact grep commands run and their
-output — in a `## Phase Deliverable Audit` subsection of `## Approach`. A
-plan for a phase-closing task that skips this is non-compliant with §9a,
-regardless of how complete the rest of the plan is.
+`docs/FORGE_AGENT_RULES.md §9a`, the unmarked-stub sweep in `§9a.1`, **and**
+the dual-mode parity-marker sweep in `§9a.2` (only if the project defines a
+marker convention — §9a.2 explains how to tell). Record the results — including
+the exact grep commands run and their output — in a `## Phase Deliverable
+Audit` subsection of `## Approach`. A plan for a phase-closing task that skips
+any of these is non-compliant with §9a, regardless of how complete the rest
+of the plan is.
 
 If it is not the phase's closing task, skip this section and proceed
 normally — §9a does not apply to non-closing tasks.
@@ -265,7 +267,11 @@ before/after signature. Include the crate or module path. If no pub items: write
 <Table: Test File | Test Name | What It Verifies | Acceptance Command>
 Each row names one test or one test group. The Acceptance Command column is a runnable shell
 command whose exit 0 proves the test passes. Do not write "None." unless the task genuinely
-adds zero test coverage — tasks that write source code always produce at least one test.>
+adds zero test coverage — tasks that write source code always produce at least one test.
+If the project defines a dual-mode parity marker convention (see "Quality Standards for
+the Approach Section" below) and this task covers a function in its scope, state the mode
+(mock/real) in the Test Name or What It Verifies column for every row covering that
+function, so the two required rows are unambiguous at a glance — e.g. "test_sample_mock_returns_sentinel (mock)" and "test_sample_real_zit_fixture (real)".>
 
 ## CI Impact
 
@@ -318,6 +324,8 @@ approach section has these properties:
 **No over-specification.** Do not specify variable names, formatting choices, or implementation details that are purely style. Over-specification wastes the ACT agent's context without adding value.
 
 **Bounded waits on subprocess/IPC tests.** If the approach calls for a test that spawns a subprocess and waits for output from it (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent), the step must say so explicitly with a concrete timeout value and state that the timeout's failure path surfaces the subprocess's captured stderr. Do not leave this implicit — an unguarded blocking wait on subprocess output that dies before producing it hangs indefinitely rather than failing, which is exactly the failure mode `FORGE_AGENT_RULES.md §5.12` (and `docs/ENVIRONMENT.md §11.5`) exists to prevent. A plan step describing such a test without naming the timeout is incomplete.
+
+**Dual-mode parity markers, if the project defines them.** Check `docs/<PROJECT>_DESIGN.md` for a dual-mode (e.g. mock/real) test parity marker convention before writing the Approach for any function the convention covers (e.g. AnvilML's `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` pair on every node `execute()` and arch-module `load()`/`sample()`/`decode()`, defined in `ANVILML_DESIGN.md §10.6`). If this task adds or modifies such a function, the `## Approach` step for that function must name both the mock-mode test and the real-mode test that will satisfy the convention — by test file and test function name, matching exactly what `## Tests` will list — so the ACT agent writes the markers with the correct names on the first attempt rather than discovering the requirement mid-implementation. A plan step touching a covered function without naming both tests is incomplete, in the same way a plan step describing a `defers_to`-covered stub without naming the deferring task ID would be incomplete. If the project's design doc defines no such convention, this standard does not apply.
 
 ## Quality Standards for the Out of Scope Section
 

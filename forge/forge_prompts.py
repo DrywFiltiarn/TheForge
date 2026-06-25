@@ -196,14 +196,29 @@ def build_task_prompt(
             f"3b. PHASE-CLOSING TASK: {tid} is the last task in this phase's\n"
             f"   tasks_phase{phase_padded}.json (or is tagged as the phase's closing\n"
             f"   task). Before writing ## Approach, you MUST run the full audit in\n"
-            f"   docs/FORGE_AGENT_RULES.md §9a AND the unmarked-stub sweep in §9a.1\n"
-            f"   across every task in this phase. Record the grep commands and their\n"
+            f"   docs/FORGE_AGENT_RULES.md §9a, the unmarked-stub sweep in §9a.1, AND\n"
+            f"   the dual-mode parity-marker sweep in §9a.2 (only if the project\n"
+            f"   defines a marker convention — §9a.2 explains how to tell) across\n"
+            f"   every task in this phase. Record the grep commands and their\n"
             f"   verbatim output (including '0 findings' if none) in a\n"
             f"   ## Phase Deliverable Audit subsection of ## Approach. Skipping this\n"
-            f"   because the phase 'looks done' is exactly the failure §9a/§9a.1 were\n"
-            f"   added to prevent — run the greps, do not reason about whether they\n"
-            f"   are needed.\n"
+            f"   because the phase 'looks done' is exactly the failure these sections\n"
+            f"   were added to prevent — run the greps, do not reason about whether\n"
+            f"   they are needed.\n"
         )
+
+    prompt += (
+        f"3c. DUAL-MODE PARITY MARKER — if the project defines one: check\n"
+        f"   docs/<PROJECT>_DESIGN.md for a marker convention (e.g. AnvilML's\n"
+        f"   REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED pair, ANVILML_DESIGN.md §10.6).\n"
+        f"   If this task adds or modifies a function the convention covers, the\n"
+        f"   ## Approach step for that function must name BOTH the mock-mode test\n"
+        f"   and the real-mode test that will satisfy it — by file and function\n"
+        f"   name — matching exactly what the ## Tests table lists. See\n"
+        f"   FORGE_AGENT_RULES.md §5.13 and agents/forge-plan.md, 'Quality\n"
+        f"   Standards for the Approach Section'. If the project defines no such\n"
+        f"   convention, this step does not apply.\n"
+    )
 
     prompt += (
         f"4. For every external crate or package this task introduces or\n"
@@ -303,6 +318,26 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
             f"   See FORGE_AGENT_RULES.md §9.7a.\n"
         )
 
+    # Not data-driven from the task dict (unlike defers_to_step) because there is
+    # no task-graph field for this — it depends on whether the project's own
+    # design doc defines a marker convention at all, which only the agent (by
+    # reading docs/<PROJECT>_DESIGN.md per forge-act.md) can determine. The
+    # instruction is therefore unconditional but self-gating: "if one exists".
+    parity_marker_step = (
+        f"3c. DUAL-MODE PARITY MARKER — if the project defines one (part of step 3's\n"
+        f"   IMPLEMENT standards — see agents/forge-act.md and FORGE_AGENT_RULES.md\n"
+        f"   §5.13): check docs/<PROJECT>_DESIGN.md for a marker convention (e.g.\n"
+        f"   AnvilML's REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED pair, ANVILML_DESIGN.md\n"
+        f"   §10.6). If this task adds or modifies a function the convention covers,\n"
+        f"   write BOTH markers as comments at the function definition, each naming\n"
+        f"   the test file and test function satisfying that mode — matching the two\n"
+        f"   tests the approved plan named. Do not write only one marker because the\n"
+        f"   task emphasises one mode; a changed real-path also needs its mock-path\n"
+        f"   marker reconfirmed, and vice versa. If the approved plan did not name\n"
+        f"   both tests for a covered function, that is a plan defect: document under\n"
+        f"   ## Blockers, set Status=BLOCKED, STOP — do not invent test names.\n"
+    )
+
     return (
         header +
         f"The plan below has been APPROVED by the project owner.\n"
@@ -341,6 +376,7 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"   defer this step — context is available now and will not be later.\n"
         f"   See FORGE_AGENT_RULES.md §5.10.\n"
         f"{defers_to_step}"
+        f"{parity_marker_step}"
         f"4. COMPILE CHECK: Run a fast compile check before the full test suite:\n"
         f"   cargo check --workspace --features mock-hardware   (Rust)\n"
         f"   python -m py_compile <new_files>                   (Python)\n"
@@ -375,15 +411,22 @@ def build_act_prompt(task: dict, approved_plan: str) -> str:
         f"    ## Blockers, STOP.\n"
         f"13. STAGE: Run git add -A inside the project repo ({project}).\n"
         f"    Do NOT run git commit or git push — The Forge commits and pushes.\n"
-        f"14. REPORT: Write .forge/reports/{tid}_implement.md.\n"
+        f"14. CACHE CLEANUP — if docs/ENVIRONMENT.md defines one (e.g. AnvilML's\n"
+        f"    cargo clean + Python cache removal, ENVIRONMENT.md §13): run it now,\n"
+        f"    exactly as specified, regardless of which crate(s)/module(s) this\n"
+        f"    task touched. Unconditional whenever this session ran any build or\n"
+        f"    test command. Not deferrable to a future task. See\n"
+        f"    FORGE_AGENT_RULES.md §5a. Skip this step if the project defines no\n"
+        f"    such procedure.\n"
+        f"15. REPORT: Write .forge/reports/{tid}_implement.md.\n"
         f"    The report must follow the exact section structure defined in\n"
         f"    agents/forge-act.md (includes ## Public API Delta). Include\n"
         f"    verbatim output for format gate, tests, cross-check, and all gates.\n"
         f"    Write this ONLY after all steps above are complete.\n"
-        f"15. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
+        f"16. UPDATE STATE: Write .forge/state/CURRENT_TASK.md:\n"
         f"      Task: {tid}\n"
         f"      Step: IMPLEMENT\n"
         f"      Status: COMPLETE\n"
         f"      Updated: <ISO 8601 UTC timestamp>\n"
-        f"16. STOP. The Forge will commit, seek push approval, and push.\n"
+        f"17. STOP. The Forge will commit, seek push approval, and push.\n"
     )

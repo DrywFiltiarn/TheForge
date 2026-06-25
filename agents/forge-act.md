@@ -221,6 +221,19 @@ commands come from `docs/ENVIRONMENT.md`.
      work touches a test file that already contains an unguarded blocking call, add the
      timeout as part of this task and record it in `## Deviations from Plan`. See
      `FORGE_AGENT_RULES.md §5.12` and `docs/ENVIRONMENT.md §11.5` for the required pattern.
+   - **Dual-mode parity marker — if the project defines one** (`FORGE_AGENT_RULES.md §5.13`):
+     check `docs/<PROJECT>_DESIGN.md` for a marker convention (e.g. AnvilML's
+     `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` pair, `ANVILML_DESIGN.md §10.6`) before writing
+     any function the convention covers. If this task adds or modifies such a function, write
+     BOTH markers as comments at the function definition, each naming the test file and test
+     function that satisfies that mode — matching exactly the two tests the approved plan named
+     in `## Approach`/`## Tests`. Do not write only one marker because the task's stated scope
+     emphasises one mode: a function this task changes on the real-path side still needs its
+     mock-path marker reconfirmed (and vice versa) — a marker naming a stale or now-incorrect
+     test is a false mechanical guarantee, worse than no marker. If the approved plan did not
+     name both tests for a covered function, that is a plan defect, not something to work
+     around silently: write a blocker under `## Blockers` and STOP rather than inventing test
+     names not present in the approved plan.
    - **`defers_to` code comment marker**: if this task's JSON `defers_to` field (read at
      session start, alongside the approved plan) is non-empty, every stub or mock
      implementation you write that corresponds to one of those entries MUST carry a
@@ -323,12 +336,23 @@ commands come from `docs/ENVIRONMENT.md`.
 
 13. **STAGE**: Run `git add -A` inside the project repo. Do NOT commit or push.
 
-14. **REPORT**: Write `.forge/reports/<TASK_ID>_implement.md` using the structure below.
+14. **CACHE CLEANUP — if the project defines one**: check `docs/ENVIRONMENT.md` for a
+    mandatory build-cache cleanup procedure (e.g. AnvilML's `cargo clean` plus Python
+    cache removal, `ENVIRONMENT.md §13`). If one is defined, run it now, exactly as
+    specified, regardless of which crate(s) or module(s) this task touched — it is not
+    scoped to this task's own files. This step is unconditional whenever this session ran
+    any build or test command (in practice, every session): it is not a maintenance task
+    to defer, and a `defers_to` entry pointing this obligation at a future task is
+    non-compliant in the same way deferring any other mandatory ACT step is non-compliant.
+    See `FORGE_AGENT_RULES.md §5a`. If the project defines no such procedure, skip this
+    step — do not invent one.
+
+15. **REPORT**: Write `.forge/reports/<TASK_ID>_implement.md` using the structure below.
     Include verbatim output for format check, tests, cross-check, and all gates.
 
-15. **UPDATE STATE**: Write `.forge/state/CURRENT_TASK.md` with Step=IMPLEMENT, Status=COMPLETE.
+16. **UPDATE STATE**: Write `.forge/state/CURRENT_TASK.md` with Step=IMPLEMENT, Status=COMPLETE.
 
-16. **STOP**.
+17. **STOP**.
 
 ## Implementation Report Format
 
@@ -427,6 +451,10 @@ can assess downstream impact. "None." if no deviations.>
   in-scope functionality, and `defers_to` is empty/absent: this is a blocker, not a deviation.
   Set `Status=BLOCKED`, document the specific missing piece under `## Blockers`. Do not write
   the stub and mark the task COMPLETE — see `FORGE_AGENT_RULES.md §9.7a`.
+- The project defines a dual-mode parity marker convention (`FORGE_AGENT_RULES.md §5.13`)
+  and this task's approved plan did not name both the mock-mode and real-mode test for a
+  function the convention covers: this is a plan defect, not something to silently complete
+  by inventing test names. Document the gap under `## Blockers`, set `Status=BLOCKED`, STOP.
 
 ## Writing the Implementation Report
 

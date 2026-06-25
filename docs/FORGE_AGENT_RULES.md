@@ -100,6 +100,30 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 5.10 | **Test catalogue sync** — any task that adds or modifies a test file MUST update `docs/TESTS.md` in the same task, adding or updating one entry per new or changed test, using the format defined in `docs/<PROJECT>_DESIGN.md` (see that document's test-catalogue section for the exact heading). A task that adds tests without updating `docs/TESTS.md` is incomplete and must not be staged. If `docs/TESTS.md` does not yet exist, create it with entries covering only the tests introduced by this task. |
 | 5.11 | **Pre-test static/syntax check, dynamically-typed languages** — for any language without a compile step that would otherwise catch a syntax error (e.g. Python), any task that creates or modifies a source file in that language MUST run that language's fastest available syntax/compile-check (e.g. `python -m py_compile <files>`) and confirm it exits 0 *before* running that language's test suite. The exact command is defined per-project in `docs/ENVIRONMENT.md §6`; if the project has not yet defined one for a language it uses, write a blocker and STOP rather than skipping the check. This is not optional even when the task's own changes appear syntactically trivial — a syntax error in any module reachable by import from a subprocessed entry point causes IPC- or process-output-blocking tests to hang indefinitely rather than fail cleanly, and a static check costing milliseconds is the only reliable way to rule this out before investing time in the full test run. |
 | 5.12 | **Bounded waits in subprocess/IPC tests** — any new or modified test that spawns a subprocess and blocks waiting for its output (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent) MUST set an explicit timeout and handle the timeout case by surfacing the subprocess's captured stderr in the failure message. Never write or leave in place an unguarded blocking call on subprocess output of any kind, in any language. See `docs/ENVIRONMENT.md §11.5` for the required pattern. This rule applies retroactively: if a task's work touches a test file that already contains an unguarded blocking call, add the timeout as part of that task and record it under `## Deviations from Plan`. |
+| 5.13 | **Dual-mode (e.g. mock/real) test parity marker — if the project defines one.** Some projects require every function in a given category (e.g. a node's `execute()`, an arch module's `load()`) to be exercised by two distinct, equally-mandatory test paths — typically a fast mock/stub path and a real/integration path — rather than treating one as a placeholder for the other. Where the project's `docs/<PROJECT>_DESIGN.md` defines such a convention (e.g. AnvilML's `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` comment-marker pair, defined in `ANVILML_DESIGN.md §10.6`), every function in that convention's scope MUST carry both markers, each naming a real, collectible test for its own mode, before the task that adds or modifies that function is complete. This is the same mechanism class as §9.7's `defers_to` marker — a JSON/design-doc-backed requirement made checkable by a comment at the implementation site, not a prose claim. A task that adds or modifies such a function without adding or correcting both markers (and the tests they name) is incomplete, even if the task's stated scope only mentions one mode — changing the real-path behaviour of a function without confirming its mock-path counterpart still passes (or vice versa) leaves a marker pointing at a stale test, which is a false mechanical guarantee and strictly worse than no marker at all. See `docs/ENVIRONMENT.md §8` (Gate 4, where one exists) for the exact validation command. If the project's design doc defines no such convention, this rule does not apply — do not invent a marker pair the project's own documents do not specify. |
+
+---
+
+## 5a. Mandatory Build Cache Cleanup (if the project defines one)
+
+Some projects require every ACT session to clean local build/test caches as one
+of its last actions, to prevent unbounded disk accumulation on a persistent
+development or agent VM. Where `docs/ENVIRONMENT.md` defines such a procedure,
+it is a **mandatory step of every ACT session that ran any build or test
+command** — not a maintenance task to defer, and not scoped to only the
+crate(s)/module(s) the current task touched. Run the exact commands
+`docs/ENVIRONMENT.md` specifies, in the order specified, after staging
+(`git add -A`) and before writing the implementation report — see the exact
+step number in `docs/ENVIRONMENT.md`'s own command sequence. This rule is
+project-agnostic in its existence — the project decides whether it applies
+and, if so, the exact commands — but where it is defined, skipping it
+(including via a `defers_to` entry pointing the cleanup at a future task) is
+non-compliant in the same way skipping any other mandatory ACT step is
+non-compliant (§9.1).
+
+This rule does not apply to CI runners — they are ephemeral and discard their
+filesystem at job end. It applies to local/agent ACT sessions only, where state
+persists across many sessions over the life of the project.
 
 ---
 
@@ -286,6 +310,51 @@ the procedure above, not instead of it:
    in the same `## Phase Deliverable Audit` subsection as the procedure
    above, including the exact grep command run and its output (even if
    empty) — not a prose claim that the sweep was performed.
+
+### 9a.2 Dual-mode parity-marker sweep (only where the project defines markers — see §5.13)
+
+If the project's `docs/<PROJECT>_DESIGN.md` defines a dual-mode test parity
+marker convention (§5.13) — e.g. AnvilML's `REAL_PATH_VERIFIED`/
+`MOCK_PATH_VERIFIED` pair (`ANVILML_DESIGN.md §10.6`) — this sweep is
+mandatory at every phase close, for the same reason §9a.1 is mandatory: a
+function that silently lacks its real-mode (or mock-mode) counterpart test
+is structurally the same defect class as an unmarked stub — an entire code
+path missing, with nothing to grep for unless the marker convention itself
+is checked. If the project defines no such convention, this section does
+not apply; do not invent markers to satisfy it.
+
+1. Identify the marker pair and the function categories they apply to from
+   the project's design doc (e.g. `ANVILML_DESIGN.md §10.4`'s fixed method
+   names: `execute()`, `load()`, `sample()`, `decode()`,
+   `compute_latent_shape()`).
+2. Run, across every source file modified by any task in the current phase
+   that defines a function in one of those categories:
+   ```
+   grep -L "REAL_PATH_VERIFIED:" <those files>
+   grep -L "MOCK_PATH_VERIFIED:" <those files>
+   ```
+   (`grep -L` lists files that do **not** contain the pattern — the files
+   missing a marker, not the files that have one.)
+3. For every file returned by either command, confirm whether it actually
+   defines a function in scope of the convention (a file that only
+   re-exports, or a test helper file, is not a finding even if it lacks a
+   marker — the convention applies to the function definitions, not every
+   file in the directory).
+4. For every marker that IS present, confirm the named test actually exists
+   and is collectible (e.g. `pytest --collect-only "<named test>"` exits 0)
+   and is not skipped, `xfail`-marked, or gated behind the mode it claims
+   to verify (a `MOCK_PATH_VERIFIED` marker naming a test that requires the
+   real backend is a finding, and vice versa).
+5. Any finding from step 3 or step 4 means the phase is **not** closed: write
+   a blocker in the final/integration task's plan report naming the exact
+   file, function, and which marker is missing, stale, or pointing at a
+   non-collectible test; set `Status=BLOCKED`; STOP. A human must decide
+   whether to author a task to add the missing test/marker or revert the
+   change requiring the originating task to be redone in full.
+6. If the sweep finds nothing, record
+   `"Dual-mode parity-marker sweep: 0 findings"` in the same
+   `## Phase Deliverable Audit` subsection as §9a.1, including the exact
+   grep commands run and their output (even if empty).
 
 ---
 

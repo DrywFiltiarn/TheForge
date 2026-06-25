@@ -671,7 +671,7 @@ Implement <thing> in <file>. <Specific fields/methods/variants>.
 1. **The file path(s)** where the implementation goes. Not just the module name — the relative path from the project root.
 2. **The exact names** of every struct, enum, trait, function, or component to create. OpenCode must not invent names that later tasks will reference by a different name.
 3. **The reference document** for any interface contract. Do not restate the contract inline — cite the document.
-4. **The test command** as a complete shell command, with the minimum test count where relevant (e.g. `>=5 tests`).
+4. **The test command** as a complete shell command, with the minimum test count where relevant (e.g. `>=5 tests`). If the project defines a dual-mode parity-marker convention (`FORGE_AGENT_RULES.md §5.13` — e.g. AnvilML's `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` pair on every node/arch-module function, `ANVILML_DESIGN.md §10.6`) and the function(s) this task implements fall within that convention's scope, state both the mock-mode and real-mode test commands explicitly — not just one. A `context` field that names only one mode for a covered function leaves the PLAN agent to guess at the second test, which is exactly the kind of unstated requirement this field exists to remove.
 5. **Feature flags** if required (e.g. `--features mock-hardware`).
 6. **Environment variables** that must be set for tests (e.g. `<PROJECT>_WORKER_MOCK=1`).
 
