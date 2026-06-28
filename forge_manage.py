@@ -148,7 +148,7 @@ def print_status(tasks: list[dict], state: dict) -> None:
     n_pending = total - n_done - n_failed - n_review - n_running
 
     print(f"\n{BOLD}The Forge — Task Status{RESET}")
-    print(f"{DIM}{'─' * 60}{RESET}")
+    print(f"{DIM}{'─' * 120}{RESET}")
     print(
         f"  Total: {BOLD}{total}{RESET}  "
         f"{GREEN}Complete: {n_done}{RESET}  "
@@ -160,8 +160,8 @@ def print_status(tasks: list[dict], state: dict) -> None:
     if state.get("last_updated"):
         print(f"  Last updated: {DIM}{state['last_updated']}{RESET}")
 
-    print(f"\n{BOLD}{'  ID':<14} {'Status':<21} {'Project':<14} Description{RESET}")
-    print(f"{DIM}{'─' * 85}{RESET}")
+    print(f"\n{BOLD}{'  ID':<14} {'Status':<32} {'Project':<14} Description{RESET}")
+    print(f"{DIM}{'─' * 120}{RESET}")
 
     current_phase = None
     for task in tasks:
@@ -185,17 +185,17 @@ def print_status(tasks: list[dict], state: dict) -> None:
                 label  = f"⏸  blocked ({', '.join(sorted(missing))})"
             else:
                 colour = YELLOW
-                label  = "▶  unblocked"
+                label  = f"▶  unblocked"
 
         padded_label = f"{colour}{label}{RESET}"
         # Account for ANSI escape sequences in column width calculation
         visible_len  = len(label)
         padding      = max(0, 20 - visible_len)
-        print(f"  {tid:<12} {padded_label}{' ' * padding} {proj:<14} {desc}")
+        print(f"  {tid:<12} {padded_label:<40} {proj:<14} {desc}")
 
         defers = task.get("defers_to", [])
         if defers:
-            print(f"  {DIM}{'':<12} {'':<20} {'':<14} ⤷ defers to: {', '.join(defers)}{RESET}")
+            print(f"  {DIM}{'':<12} {'':<40} {'':<14} ⤷ defers to: {', '.join(defers)}{RESET}")
 
     print()
 
