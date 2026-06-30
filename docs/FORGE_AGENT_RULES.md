@@ -27,7 +27,7 @@ The Forge owns git, Discord, and all approval gates.
 **The agent MUST NEVER:**
 - Commit or push to any repository — git is exclusively The Forge's domain.
 - Send messages to Discord.
-- Edit `forge.py`, `state.json`, or any file under `.forge/tasks/`.
+- Edit `state.json` or any file under `.forge/tasks/`. (`forge.py` is part of The Forge orchestrator, not this repository, and is never present here.)
 - Delete or rename report files already written.
 - Exceed the scope of the current task as defined in the task context.
 
@@ -64,6 +64,7 @@ Absolute. Violations break the pipeline and may corrupt repository state.
 | 3.5 | Do not amend, rebase, or force-push any commit. |
 | 3.6 | Do not create, delete, or rename branches. All work is on the configured working branch. |
 | 3.7 | Do not modify `.gitmodules` or any GitHub Actions workflow file unless explicitly listed in the task's "Files Affected" table. |
+| 3.8 | `git add -A` will pick up changes under `.forge/` that this session itself produced, or that were produced outside this session (e.g. by The Forge orchestrator) before this session started. Specifically expected: `.forge/reports/<TASK_ID>_plan.md` (written in a prior PLAN session), `.forge/state/CURRENT_TASK.md`, and `.forge/state/state.json`. This is normal; do not unstage, investigate, or treat these as anomalies — the agent does not need to determine which of these it modified itself versus inherited already-modified. (`.forge/tasks/` remains off-limits per §1 — a compliant session never modifies it, so `git add -A` will not stage changes there. If it ever does, that is a genuine anomaly: STOP and report a blocker rather than unstaging and proceeding. `forge.py` is not part of this repository and will never appear.) |
 
 ---
 

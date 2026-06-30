@@ -335,6 +335,13 @@ commands come from `docs/ENVIRONMENT.md`.
     `## Blockers`, set Status=BLOCKED, and STOP. Do not stage unformatted code.
 
 13. **STAGE**: Run `git add -A` inside the project repo. Do NOT commit or push.
+    This will pick up `.forge/reports/<TASK_ID>_plan.md`, `.forge/state/CURRENT_TASK.md`,
+    and `.forge/state/state.json` — these are expected, whether modified by this session
+    or inherited already-modified from before it started. See `FORGE_AGENT_RULES.md §3.8`.
+    Do not unstage or investigate `.forge/` paths.
+    Note: `.forge/reports/<TASK_ID>_implement.md` does not exist yet at this point — it is
+    written in step 15, after this staging step. It does not need a second `git add` here;
+    The Forge's own `git add -A` before commit will catch it.
 
 14. **CACHE CLEANUP — if the project defines one**: check `docs/ENVIRONMENT.md` for a
     mandatory build-cache cleanup procedure (e.g. AnvilML's `cargo clean` plus Python
