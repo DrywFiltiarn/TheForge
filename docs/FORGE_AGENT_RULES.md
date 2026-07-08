@@ -102,6 +102,7 @@ Tasks are intentionally small. Implement exactly the task defined — no more, n
 | 5.11 | **Pre-test static/syntax check, dynamically-typed languages** — for any language without a compile step that would otherwise catch a syntax error (e.g. Python), any task that creates or modifies a source file in that language MUST run that language's fastest available syntax/compile-check (e.g. `python -m py_compile <files>`) and confirm it exits 0 *before* running that language's test suite. The exact command is defined per-project in `docs/ENVIRONMENT.md §6`; if the project has not yet defined one for a language it uses, write a blocker and STOP rather than skipping the check. This is not optional even when the task's own changes appear syntactically trivial — a syntax error in any module reachable by import from a subprocessed entry point causes IPC- or process-output-blocking tests to hang indefinitely rather than fail cleanly, and a static check costing milliseconds is the only reliable way to rule this out before investing time in the full test run. |
 | 5.12 | **Bounded waits in subprocess/IPC tests** — any new or modified test that spawns a subprocess and blocks waiting for its output (a socket `recv()`, `proc.wait()`, `proc.communicate()`, or equivalent) MUST set an explicit timeout and handle the timeout case by surfacing the subprocess's captured stderr in the failure message. Never write or leave in place an unguarded blocking call on subprocess output of any kind, in any language. See `docs/ENVIRONMENT.md §11.5` for the required pattern. This rule applies retroactively: if a task's work touches a test file that already contains an unguarded blocking call, add the timeout as part of that task and record it under `## Deviations from Plan`. |
 | 5.13 | **Dual-mode (e.g. mock/real) test parity marker — if the project defines one.** Some projects require every function in a given category (e.g. a node's `execute()`, an arch module's `load()`) to be exercised by two distinct, equally-mandatory test paths — typically a fast mock/stub path and a real/integration path — rather than treating one as a placeholder for the other. Where the project's `docs/<PROJECT>_DESIGN.md` defines such a convention (e.g. AnvilML's `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` comment-marker pair, defined in `ANVILML_DESIGN.md §10.6`), every function in that convention's scope MUST carry both markers, each naming a real, collectible test for its own mode, before the task that adds or modifies that function is complete. This is the same mechanism class as §9.7's `defers_to` marker — a JSON/design-doc-backed requirement made checkable by a comment at the implementation site, not a prose claim. A task that adds or modifies such a function without adding or correcting both markers (and the tests they name) is incomplete, even if the task's stated scope only mentions one mode — changing the real-path behaviour of a function without confirming its mock-path counterpart still passes (or vice versa) leaves a marker pointing at a stale test, which is a false mechanical guarantee and strictly worse than no marker at all. See `docs/ENVIRONMENT.md §8` (Gate 4, where one exists) for the exact validation command. If the project's design doc defines no such convention, this rule does not apply — do not invent a marker pair the project's own documents do not specify. |
+| 5.14 | **Runnable Proof verbatim transcript — mandatory for every task whose acceptance criterion is a Runnable Proof (`docs/FORGE_TASK_AUTHORING_SPEC.md §9`), tagged `"manual"` or not.** Actually execute the proof's literal command sequence — do not narrate or infer its outcome from the surrounding test/gate results, however strong that corroborating evidence is. Paste the real terminal output (the submitted `job_id`, the polled response body, the actual HTTP status codes, the actual asserted field value) into a dedicated `## Runnable Proof Transcript` section of the implementation report, in addition to (not instead of) `## Test Results`. A report claiming a Runnable Proof "passes end-to-end" with no accompanying transcript is incomplete under this rule, regardless of how many other gates passed — the whole point of a Runnable Proof is that it is independently checkable evidence, not an assertion. If the proof's own literal command text contains a bug discovered during this task (e.g. a stale field-casing assumption, a wrong flag), fix it in every location that command text is duplicated — the task's own `tasks_phase<NNN>.json` `context`, `TASKS_PHASE<NNN>.md`'s Acceptance Criterion *and* Phase Acceptance Criteria sections, and `docs/RUNNABLE_PROOF.md`'s corresponding entry (both bash and PowerShell variants) — in the same task, per `FORGE_TASK_AUTHORING_SPEC.md §9a`'s pairing rule. Fixing only an internal planning artifact (a `_plan.md` report) while leaving the same bug live in these durable, reader-facing documents does not satisfy this rule. Found and reinforced after `P14-E1` shipped a passing proof with no transcript and a status-casing fix that never reached `TASKS_PHASE014.md`/`docs/RUNNABLE_PROOF.md`, silently leaving the identical bug live in three other already-authored phases' proof text (`TASKS_PHASE024/025/026.md`) that had copied the same wrong casing before anyone noticed. |
 
 ---
 
@@ -200,7 +201,9 @@ wc -l .forge/reports/<TASK_ID>_plan.md          # must be > 40 lines
 
 # For implementation reports:
 head -1 .forge/reports/<TASK_ID>_implement.md        # must print: # Implementation Report: <TASK_ID>
-grep "^## " .forge/reports/<TASK_ID>_implement.md    # must show 11 section headings
+grep "^## " .forge/reports/<TASK_ID>_implement.md    # must show 11 section headings (12 if this
+                                                       # task's acceptance criterion is a Runnable
+                                                       # Proof — see §5.14/§17)
 wc -l .forge/reports/<TASK_ID>_implement.md          # must be > 40 lines
 ```
 The exact required sections for each report type are defined in §16 and §17 below.
@@ -716,8 +719,11 @@ the agent file takes precedence.
 
 Output path: `.forge/reports/<TASK_ID>_implement.md`
 
-Every section is mandatory. Use exactly these 11 headings in this order. `grep "^## "` on
-the finished report must return exactly 11 lines.
+Every section is mandatory. Use exactly these 11 headings in this order — 12 when the
+task's acceptance criterion includes a Runnable Proof (`docs/FORGE_TASK_AUTHORING_SPEC.md
+§9`), which additionally requires `## Runnable Proof Transcript` immediately after
+`## Test Results` (see rule 5.14). `grep "^## "` on the finished report must return
+exactly 11 lines, or 12 for a Runnable-Proof-bearing task.
 
 ```markdown
 # Implementation Report: <TASK_ID>
@@ -759,6 +765,15 @@ If the MCP result differs from the approved plan's version, record both and note
 ## Test Results
 
 <verbatim test runner output — not a prose summary>
+
+## Runnable Proof Transcript
+
+<Required only when this task's acceptance criterion is or includes a Runnable Proof
+(§9), whether or not the task carries the "manual" tag — omit this heading entirely
+for tasks with no Runnable Proof. Verbatim terminal output of the actual, literal
+command sequence: the real submitted job_id/request body, the real polled response
+body, the real HTTP status codes, the real value of whatever field the acceptance
+criterion asserts on — not a paraphrase of the outcome. See rule 5.14.>
 
 ## Format Gate
 
