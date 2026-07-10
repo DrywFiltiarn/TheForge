@@ -477,10 +477,11 @@ python -m py_compile $(git ls-files '<worker-dir>/*.py')
 <PROJECT>_WORKER_MOCK=1 python -m pytest
 # Runnable Proof (manual): <one-line statement of the capability being proven>
 cargo run --features mock-hardware &
+SERVER_PID=$!
 sleep <N>
 curl -s <endpoint> | python3 -c "import sys,json; d=json.load(sys.stdin); assert <condition>"
 # -> <expected observable result>
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 ````
 
@@ -493,15 +494,22 @@ across this project's phases, is:
 
 ```bash
 cargo run --features mock-hardware &
+SERVER_PID=$!
 sleep <N>                                   # allow startup / worker Ready
 curl -s <verb-and-path> | python3 -c "..."  # exercise the capability; assert on the JSON
 # -> <one-line comment stating the expected, literal result>
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 Adapt the verb (`curl -X POST ...`, `websocat ...`, a `for` polling loop, a
 `kill <pid>` to simulate a crash) to what the phase actually delivers, but keep
-the three-part shape: start the binary, exercise it, tear it down. Never write a
+the three-part shape: start the binary, exercise it, tear it down. Always tear
+down via `SERVER_PID=$!` captured immediately after backgrounding, then
+`kill "$SERVER_PID"` — never `kill %1`. Bash job-control syntax (`%1`) requires
+an interactive shell with monitor mode enabled; it silently fails to resolve
+when the command runs non-interactively (as it does under the ACT agent's bash
+tool), which leaves the backgrounded server running and its inherited stdout
+pipe open, hanging the tool call indefinitely. Never write a
 Runnable Proof step that only re-runs `cargo test` under another name — if the
 only way to observe the capability is via the test suite, the phase has no new
 external observable behaviour and should use the "not applicable" form from §9
@@ -1097,12 +1105,13 @@ cargo test -p anvilml-scheduler --features mock-hardware
 cargo clippy -p anvilml-scheduler --features mock-hardware -- -D warnings
 # Runnable Proof (manual): a submitted job is dispatched and reaches Running
 cargo run --features mock-hardware &
+SERVER_PID=$!
 sleep 5
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \\
   -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
 # -> 200 with status Queued or Running (dispatch loop picked it up)
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ---
@@ -1128,12 +1137,13 @@ worker.
 
 ```bash
 cargo run --features mock-hardware &
+SERVER_PID=$!
 sleep 5
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \\
   -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; assert json.load(sys.stdin)['status'] in ('Queued','Running')"
 # -> 200 with status Queued or Running (dispatch loop picked it up)
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 ````
 
